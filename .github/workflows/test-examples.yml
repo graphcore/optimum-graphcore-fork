@@ -23,6 +23,8 @@ jobs:
     steps:
     - name: Checkout Repo
       uses: actions/checkout@v2
+      with:
+        ref: sdk-release-3.2
     - name: Attach RDMA network 
       run: |
           python3 -m pip install docker
