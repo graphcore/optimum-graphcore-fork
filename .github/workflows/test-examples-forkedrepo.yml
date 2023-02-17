@@ -1,0 +1,40 @@
+# This workflow is only meant to be run on the forked repo graphcore/optimum-graphcore-fork. 
+# It will be disabled via GitHub UI for the upstream repo
+name: examples
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+
+    runs-on: [self-hosted, Linux, X64, pod4]
+    container: 
+      image: localhost:5000/graphcore/pytorch:3.2.0-EA.1-ubuntu-20.04
+      options: --pull=always --ulimit memlock=-1:-1 --cap-add=IPC_LOCK --device=/dev/infiniband/ -e IPUOF_VIPU_API_HOST -e IPUOF_VIPU_API_PARTITION_ID --shm-size=128G
+    env:
+      POPTORCH_WAIT_FOR_IPU: 1
+    timeout-minutes: 720
+    steps:
+    - name: Checkout Repo
+      uses: actions/checkout@v2
+      with:
+        ref: sdk-release-3.2
+    - name: Attach RDMA network 
+      run: |
+          python3 -m pip install docker
+          python3 -c "import docker; client=docker.from_env(); client.networks.get('macvlan_rdma_swarm').connect(client.containers.get('${{ job.container.id }}'))"
+          gc-monitor
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install .[testing]
+    - name: Test with Pytest
+      run: |
+        export SDK_PATH=$POPLAR_SDK_ENABLED/..
+        export RUN_SLOW=true
+        gc-monitor
+        pytest tests/test_examples_match_transformers.py
+        pytest tests/test_examples.py::TokenClassificationExampleTester::test_run_ner_groupbert
