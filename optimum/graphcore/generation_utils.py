@@ -42,8 +42,10 @@ from transformers.generation.utils import (
     SampleOutput,
     StoppingCriteriaList,
 )
-from transformers.modeling_outputs import ModelOutput
+from transformers.modeling_outputs import BaseModelOutput, ModelOutput, Seq2SeqLMOutput
 from transformers.pytorch_utils import torch_int_div
+
+import poptorch.poptorch_core as poptorch_core
 
 
 logger = logging.get_logger(__name__)
@@ -92,6 +94,17 @@ class DecoderWrapper(nn.Module):
 class IPUGenerationMixin(GenerationMixin):
     def _pad_tensors_to_max_len(self, tensor: torch.Tensor, max_length: int, pad_token_id: int) -> torch.Tensor:
         return nn.functional.pad(tensor, (0, max_length - tensor.shape[1]), "constant", pad_token_id)
+
+    # def _update_model_buffers_if_needed(self, model_kwargs):
+    #     """
+    #     If Seq2Seq decoder model then we cache the encoder values inside pytorch buffers to reduce the IO cost
+    #     """
+    #     print("in update model buffers")
+    #     if not self.config.is_encoder_decoder or not hasattr(self, "poptorch_model"):
+    #         return
+    #     self.poptorch_model.encoder_last_hidden_state = model_kwargs["encoder_outputs"]["last_hidden_state"] 
+    #     self.poptorch_model.encoder_attention_mask = model_kwargs["attention_mask"]
+    #     copyBuffersToDevice(self.poptorch_model)
 
     def _call_generate(self, *args, **kwargs):
         if not hasattr(self, "poptorch_decoder"):
@@ -267,9 +280,12 @@ class IPUGenerationMixin(GenerationMixin):
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
 
+        # if self.config.is_encoder_decoder:
+        #     self._update_model_buffers_if_needed(model_kwargs)
+
         # Change: disable use_cache because it can't be statically compiled
-        if "use_cache" in model_kwargs:
-            model_kwargs["use_cache"] = False
+        # if "use_cache" in model_kwargs:
+        #     model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
         unfinished_sequences = input_ids.new(input_ids.shape[0]).fill_(1)
@@ -278,7 +294,7 @@ class IPUGenerationMixin(GenerationMixin):
         while True:
             # Change: remove synced_gpu code
             # Change: add input max_length padding
-            input_ids = self._pad_tensors_to_max_len(input_ids, stopping_criteria.max_length, pad_token_id)
+            input_ids = self._pad_tensors_to_max_len(input_ids, stopping_criteria.max_length, pad_token_id)   # Cache works without removing the padding?
 
             # Change: For a seq2seq model such as BART, the "attention_mask" is the encoder/cross attention mask and it does not require padding.
             if not self.config.is_encoder_decoder:
@@ -289,6 +305,13 @@ class IPUGenerationMixin(GenerationMixin):
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
+            print("*******greedy search", model_inputs, "\n**********************")
+
+            model_inputs["decoder_input_ids"] = model_inputs["decoder_input_ids"][:,-1:]    # PT : with this the cached version compiles and runs, but produces wrong esults
+
+            import pdb
+            pdb.set_trace()
+            
             # forward pass to get next token
             outputs = self._call_generate(
                 t=torch.tensor(cur_len - 1),
@@ -351,6 +374,7 @@ class IPUGenerationMixin(GenerationMixin):
             if unfinished_sequences.max() == 0 or stopping_criteria(input_ids, scores):
                 # Change: remove synced_gpu code
                 break
+        # End of while True
 
         if return_dict_in_generate:
             if self.config.is_encoder_decoder:
@@ -536,6 +560,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
+            print("Overriding use_cache setting... - use_cache=False")
             model_kwargs["use_cache"] = False
 
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
@@ -554,6 +579,8 @@ class IPUGenerationMixin(GenerationMixin):
                 )
 
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+
+            model_inputs["decoder_input_ids"] = model_inputs["decoder_input_ids"][:,-1:]     # PT
 
             outputs = self._call_generate(
                 t=torch.tensor(cur_len - 1),
@@ -831,6 +858,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
+            print("Overriding use_cache setting... - use_cache=False")
             model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
@@ -1107,6 +1135,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
+            print("Overriding use_cache setting... - use_cache=False")
             model_kwargs["use_cache"] = False
 
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
