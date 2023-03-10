@@ -535,6 +535,7 @@ class IPUGenerationMixin(GenerationMixin):
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             outputs = self._call_generate(
+                t=torch.tensor(cur_len - 1),
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
@@ -544,13 +545,6 @@ class IPUGenerationMixin(GenerationMixin):
             input_ids = input_ids[:, :cur_len]
             if not self.config.is_encoder_decoder:
                 model_kwargs["attention_mask"] = model_kwargs["attention_mask"][:, :cur_len]
-
-            outputs.logits = outputs.logits[:, :cur_len, :]
-            if outputs.logits.dim() == 3:
-                outputs.logits = outputs.logits[:, :cur_len, :]
-            # If the dimension of logits is 2, then only the logits of the last non-padding token is returned, so no need to slice.
-            else:
-                next_token_logits = outputs.logits
 
             # Change: remove synced_gpu code
 
@@ -840,6 +834,7 @@ class IPUGenerationMixin(GenerationMixin):
 
             # forward pass to get next token
             outputs = self._call_generate(
+                t=torch.tensor(cur_len - 1),
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
@@ -849,13 +844,6 @@ class IPUGenerationMixin(GenerationMixin):
             input_ids = input_ids[:, :cur_len]
             if not self.config.is_encoder_decoder:
                 model_kwargs["attention_mask"] = model_kwargs["attention_mask"][:, :cur_len]
-
-            outputs.logits = outputs.logits[:, :cur_len, :]
-            if outputs.logits.dim() == 3:
-                outputs.logits = outputs.logits[:, :cur_len, :]
-            # If the dimension of logits is 2, then only the logits of the last non-padding token is returned, so no need to slice.
-            else:
-                next_token_logits = outputs.logits
 
             # Change: remove synced_gpu code
 
@@ -1119,6 +1107,7 @@ class IPUGenerationMixin(GenerationMixin):
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             outputs = self._call_generate(
+                t=torch.tensor(cur_len - 1),
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
@@ -1128,13 +1117,6 @@ class IPUGenerationMixin(GenerationMixin):
             input_ids = input_ids[:, :cur_len]
             if not self.config.is_encoder_decoder:
                 model_kwargs["attention_mask"] = model_kwargs["attention_mask"][:, :cur_len]
-
-            outputs.logits = outputs.logits[:, :cur_len, :]
-            if outputs.logits.dim() == 3:
-                outputs.logits = outputs.logits[:, :cur_len, :]
-            # If the dimension of logits is 2, then only the logits of the last non-padding token is returned, so no need to slice.
-            else:
-                next_token_logits = outputs.logits
 
             # Change: remove synced_gpu code
 
