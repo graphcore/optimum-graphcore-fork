@@ -545,8 +545,10 @@ class PipelinedWhisperForConditionalGeneration(transformers.WhisperForConditiona
 
         self.change_encoder_layer_class(restore=False)
         self.change_encoder_and_decoder_classes(restore=False)
-        self.change_decoder_layer_class(restore=False)
-        self.change_positional_embedding(restore=False)
+
+        # Work in Progress for caching (PT)
+        # self.change_decoder_layer_class(restore=False)
+        # self.change_positional_embedding(restore=False)
 
 
         logger.info("---------- Device Allocation -----------")
