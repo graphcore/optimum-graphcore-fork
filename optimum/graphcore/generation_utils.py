@@ -95,17 +95,6 @@ class IPUGenerationMixin(GenerationMixin):
     def _pad_tensors_to_max_len(self, tensor: torch.Tensor, max_length: int, pad_token_id: int) -> torch.Tensor:
         return nn.functional.pad(tensor, (0, max_length - tensor.shape[1]), "constant", pad_token_id)
 
-    # def _update_model_buffers_if_needed(self, model_kwargs):
-    #     """
-    #     If Seq2Seq decoder model then we cache the encoder values inside pytorch buffers to reduce the IO cost
-    #     """
-    #     print("in update model buffers")
-    #     if not self.config.is_encoder_decoder or not hasattr(self, "poptorch_model"):
-    #         return
-    #     self.poptorch_model.encoder_last_hidden_state = model_kwargs["encoder_outputs"]["last_hidden_state"] 
-    #     self.poptorch_model.encoder_attention_mask = model_kwargs["attention_mask"]
-    #     copyBuffersToDevice(self.poptorch_model)
-
     def _call_generate(self, *args, **kwargs):
         if not hasattr(self, "poptorch_decoder"):
             wrapper = DecoderWrapper(self.eval())
@@ -280,12 +269,9 @@ class IPUGenerationMixin(GenerationMixin):
                 model_kwargs["encoder_outputs"].get("hidden_states") if output_hidden_states else None
             )
 
-        # if self.config.is_encoder_decoder:
-        #     self._update_model_buffers_if_needed(model_kwargs)
-
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            # print("Overriding use_cache setting... - use_cache=False")          # TODO Find a way to let the user know about the override
+            # print("Overriding use_cache setting... - use_cache=False")          # TODO Find an obtrusive way to let the user know about the override
             model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
@@ -295,7 +281,7 @@ class IPUGenerationMixin(GenerationMixin):
         while True:
             # Change: remove synced_gpu code
             # Change: add input max_length padding
-            input_ids = self._pad_tensors_to_max_len(input_ids, stopping_criteria.max_length, pad_token_id)   # PT Cache works without removing the padding?
+            input_ids = self._pad_tensors_to_max_len(input_ids, stopping_criteria.max_length, pad_token_id)
 
             # Change: For a seq2seq model such as BART, the "attention_mask" is the encoder/cross attention mask and it does not require padding.
             if not self.config.is_encoder_decoder:
@@ -306,8 +292,6 @@ class IPUGenerationMixin(GenerationMixin):
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
-            # model_inputs["decoder_input_ids"] = model_inputs["decoder_input_ids"][:,-1:]    # PT : with this the cached version compiles and runs, but produces wrong esults
-            
             # forward pass to get next token
             outputs = self._call_generate(
                 t=torch.tensor(cur_len - 1),
