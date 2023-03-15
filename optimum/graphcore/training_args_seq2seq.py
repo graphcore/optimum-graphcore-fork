@@ -14,6 +14,7 @@
 
 from dataclasses import dataclass, field
 from typing import Optional
+from warnings import warn
 
 from optimum.utils import logging
 from transformers.file_utils import add_start_docstrings

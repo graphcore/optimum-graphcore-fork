@@ -28,6 +28,7 @@ logger = logging.get_logger(__name__)
 
 
 class IPUSeq2SeqTrainer(IPUTrainer):
+    
     def _wrap_and_compile_model_for_evaluation(self, dataloader, prediction_loss_only):
         if prediction_loss_only:
             return super()._wrap_and_compile_model_for_evaluation(dataloader, prediction_loss_only)
@@ -139,6 +140,17 @@ class IPUSeq2SeqTrainer(IPUTrainer):
         """
         self._max_length = max_length if max_length is not None else self.args.generation_max_length
         self._num_beams = num_beams if num_beams is not None else self.args.generation_num_beams
+        
+        if self.args.predict_with_generate:
+            # generation currently only supported for micro batch size = 1 and device iterations = 1
+            if self.ipu_config.inference_device_iterations != 1 or self.args.per_device_eval_batch_size != 1:
+                raise ValueError(
+                    ("IPUSeq2SeqTrainingArguments.predict_with_generate == True, but this is currently only supported for: "
+                     "IPUSeq2SeqTrainingArguments.per_device_eval_batch_size == 1 and IPUConfig.inference_device_iterations == 1. Current values are "
+                     f"{self.ipu_config.inference_device_iterations} and {self.args.per_device_eval_batch_size} respectively. "
+                     "Please create a new IPUSeq2SeqTrainer with the correct configuration, or set IPUSeq2SeqTrainer.args.predict_with_generate to False to run evaluation instead."
+                    )
+                )
         return super().predict(test_dataset, ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix)
 
     def prediction_step(
