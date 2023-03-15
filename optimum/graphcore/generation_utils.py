@@ -97,7 +97,7 @@ class DecoderWrapper(nn.Module):
     def forward(self, t, **model_inputs):
         """
         Args:
-            t : (`torch.Tensor(int)`) Tensor with single int representing the current length of the sequence being generated
+            t : (`torch.Tensor(int)`) Tensor with shape [global_batch_size, 1]. All elements are the same int which represents the current length of the sequence being generated
             model_inputs : Regular model_inputs passed to the wrapped model.
         Returns:
             The output logits at position `t` only
@@ -324,16 +324,24 @@ class IPUGenerationMixin(GenerationMixin):
 
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
+            
             # forward pass to get next token
             outputs = self._call_generate(
+<<<<<<< HEAD
                 cur_token_id=cur_len - 1,
+=======
+                t=self._get_cur_token_logits_tensor(model_inputs["decoder_input_ids"].shape[0], cur_len - 1),
+>>>>>>> feat: add support for batched text generation
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+<<<<<<< HEAD
 
+=======
+            
+>>>>>>> feat: add support for batched text generation
             # Change: Remove padding and restore to actual length
             input_ids = input_ids[:, :cur_len]
             if not self.config.is_encoder_decoder:
@@ -594,7 +602,11 @@ class IPUGenerationMixin(GenerationMixin):
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             outputs = self._call_generate(
+<<<<<<< HEAD
                 cur_token_id=cur_len - 1,
+=======
+                t=self._get_cur_token_logits_tensor(model_inputs["decoder_input_ids"].shape[0], cur_len - 1),
+>>>>>>> feat: add support for batched text generation
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
@@ -892,13 +904,21 @@ class IPUGenerationMixin(GenerationMixin):
 
             # forward pass to get next token
             outputs = self._call_generate(
+<<<<<<< HEAD
                 cur_token_id=cur_len - 1,
+=======
+                t=self._get_cur_token_logits_tensor(model_inputs["decoder_input_ids"].shape[0], cur_len - 1),
+>>>>>>> feat: add support for batched text generation
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+<<<<<<< HEAD
 
+=======
+            
+>>>>>>> feat: add support for batched text generation
             # Change: Remove padding and restore to actual length
             input_ids = input_ids[:, :cur_len]
             if not self.config.is_encoder_decoder:
@@ -1165,7 +1185,11 @@ class IPUGenerationMixin(GenerationMixin):
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
             outputs = self._call_generate(
+<<<<<<< HEAD
                 cur_token_id=cur_len - 1,
+=======
+                t=self._get_cur_token_logits_tensor(model_inputs["decoder_input_ids"].shape[0], cur_len - 1),
+>>>>>>> feat: add support for batched text generation
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
