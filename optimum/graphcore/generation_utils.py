@@ -97,7 +97,7 @@ class DecoderWrapper(nn.Module):
     def forward(self, t, **model_inputs):
         """
         Args:
-            t : (`torch.Tensor(int)`) Tensor with single int representing the current length of the sequence being generated
+            t : (`torch.Tensor(int)`) Tensor with shape [global_batch_size, 1]. All elements are the same int which represents the current length of the sequence being generated
             model_inputs : Regular model_inputs passed to the wrapped model.
         Returns:
             The output logits at position `t` only
@@ -324,7 +324,7 @@ class IPUGenerationMixin(GenerationMixin):
 
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
+            
             # forward pass to get next token
             outputs = self._call_generate(
                 cur_token_id=cur_len - 1,
@@ -333,7 +333,6 @@ class IPUGenerationMixin(GenerationMixin):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
-
             # Change: Remove padding and restore to actual length
             input_ids = input_ids[:, :cur_len]
             if not self.config.is_encoder_decoder:
@@ -898,7 +897,6 @@ class IPUGenerationMixin(GenerationMixin):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
-
             # Change: Remove padding and restore to actual length
             input_ids = input_ids[:, :cur_len]
             if not self.config.is_encoder_decoder:
