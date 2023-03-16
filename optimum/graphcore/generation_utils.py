@@ -324,7 +324,7 @@ class IPUGenerationMixin(GenerationMixin):
 
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            
+
             # forward pass to get next token
             outputs = self._call_generate(
                 cur_token_id=cur_len - 1,
@@ -897,6 +897,10 @@ class IPUGenerationMixin(GenerationMixin):
                 output_attentions=output_attentions,
                 output_hidden_states=output_hidden_states,
             )
+<<<<<<< HEAD
+=======
+
+>>>>>>> fix: format changed files with black
             # Change: Remove padding and restore to actual length
             input_ids = input_ids[:, :cur_len]
             if not self.config.is_encoder_decoder:
