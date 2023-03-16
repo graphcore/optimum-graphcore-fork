@@ -271,7 +271,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            # print("Overriding use_cache setting... - use_cache=False")          # TODO Find an obtrusive way to let the user know about the override
+            logger.warn("Overriding use_cache setting... - use_cache=False")
             model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
@@ -540,7 +540,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            # print("Overriding use_cache setting... - use_cache=False")    # TODO Find a way to let the user know
+            logger.warn("Overriding use_cache setting... - use_cache=False")
             model_kwargs["use_cache"] = False
 
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
@@ -559,8 +559,6 @@ class IPUGenerationMixin(GenerationMixin):
                 )
 
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-
-            model_inputs["decoder_input_ids"] = model_inputs["decoder_input_ids"][:,-1:]     # PT
 
             outputs = self._call_generate(
                 t=torch.tensor(cur_len - 1),
@@ -838,7 +836,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            # print("Overriding use_cache setting... - use_cache=False")   # TODO Find a way to let the user know
+            logger.warn("Overriding use_cache setting... - use_cache=False")
             model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
@@ -1115,7 +1113,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            # print("Overriding use_cache setting... - use_cache=False")     # TODO Find a way to let the user know of the override
+            logger.warn("Overriding use_cache setting... - use_cache=False")
             model_kwargs["use_cache"] = False
 
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
