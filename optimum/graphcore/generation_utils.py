@@ -49,19 +49,26 @@ logger = logging.get_logger(__name__)
 
 
 class Seq2SeqWrapper(nn.Module):
-    def __init__(self, pipelined_model, encoder_outputs):
+    def __init__(self, pipelined_model):
         super().__init__()
         self.pipelined_model = pipelined_model
 
-    def forward(self, t, **model_inputs):
+    def forward(self, **model_inputs):
         outputs = self.pipelined_model(
             **model_inputs
         )
-        next_token_logits = poptorch.dynamic_slice(outputs.logits, 1, t, 1, 1)
+        # next_token_logits = poptorch.dynamic_slice(outputs.logits, 1, t, 1, 1)
+        next_token_logits = outputs.logits
         return type(outputs)(
             loss=None,
             logits=next_token_logits,
         )
+
+
+import os
+def set_decoder_poplar_engine_options():
+    if "DECODER_POPLAR_ENGINE_OPTIONS" in os.environ:
+        os.environ["POPLAR_ENGINE_OPTIONS"] = os.environ["DECODER_POPLAR_ENGINE_OPTIONS"]
 
 
 class IPUGenerationMixin(GenerationMixin):
@@ -71,7 +78,8 @@ class IPUGenerationMixin(GenerationMixin):
     def _call_generate(self, *args, **kwargs):
         if self.config.is_encoder_decoder:
             if not hasattr(self, "poptorch_model"):
-                wrapper = Seq2SeqWrapper(self.eval(), kwargs["encoder_outputs"])
+                set_decoder_poplar_engine_options()
+                wrapper = Seq2SeqWrapper(self.eval())
                 self.poptorch_model = poptorch.inferenceModel(wrapper, self.ipu_config.to_options(for_inference=True))
         else:
             if not hasattr(self, "poptorch_model"):
@@ -237,7 +245,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            logger.warn("Overriding use_cache setting... - use_cache=False")
+            warnings.warn("Overriding use_cache setting... - use_cache=False", UserWarning)
             model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
@@ -257,10 +265,10 @@ class IPUGenerationMixin(GenerationMixin):
 
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs["t"] = torch.tensor(cur_len - 1, dtype=torch.half)
 
             # forward pass to get next token
             outputs = self._call_generate(
-                t=torch.tensor(cur_len - 1),
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
@@ -506,7 +514,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            logger.warn("Overriding use_cache setting... - use_cache=False")
+            warnings.warn("Overriding use_cache setting... - use_cache=False", UserWarning)
             model_kwargs["use_cache"] = False
 
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
@@ -808,7 +816,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            logger.warn("Overriding use_cache setting... - use_cache=False")
+            warnings.warn("Overriding use_cache setting... - use_cache=False", UserWarning)
             model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
@@ -1091,7 +1099,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            logger.warn("Overriding use_cache setting... - use_cache=False")
+            warnings.warn("Overriding use_cache setting... - use_cache=False", UserWarning)
             model_kwargs["use_cache"] = False
 
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
