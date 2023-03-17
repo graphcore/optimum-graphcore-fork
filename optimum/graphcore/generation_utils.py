@@ -91,6 +91,12 @@ class DecoderWrapper(nn.Module):
         )
 
 
+import os
+def set_decoder_poplar_engine_options():
+    if "DECODER_POPLAR_ENGINE_OPTIONS" in os.environ:
+        os.environ["POPLAR_ENGINE_OPTIONS"] = os.environ["DECODER_POPLAR_ENGINE_OPTIONS"]
+
+
 class IPUGenerationMixin(GenerationMixin):
     def _pad_tensors_to_max_len(self, tensor: torch.Tensor, max_length: int, pad_token_id: int) -> torch.Tensor:
         return nn.functional.pad(tensor, (0, max_length - tensor.shape[1]), "constant", pad_token_id)
@@ -271,7 +277,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            logger.warn("Overriding use_cache setting... - use_cache=False")
+            warnings.warn("Overriding use_cache setting... - use_cache=False", UserWarning)
             model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
@@ -291,10 +297,10 @@ class IPUGenerationMixin(GenerationMixin):
 
             # prepare model inputs
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs["t"] = torch.tensor(cur_len - 1, dtype=torch.half)
 
             # forward pass to get next token
             outputs = self._call_generate(
-                t=torch.tensor(cur_len - 1),
                 **model_inputs,
                 return_dict=True,
                 output_attentions=output_attentions,
@@ -540,7 +546,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            logger.warn("Overriding use_cache setting... - use_cache=False")
+            warnings.warn("Overriding use_cache setting... - use_cache=False", UserWarning)
             model_kwargs["use_cache"] = False
 
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
@@ -836,7 +842,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            logger.warn("Overriding use_cache setting... - use_cache=False")
+            warnings.warn("Overriding use_cache setting... - use_cache=False", UserWarning)
             model_kwargs["use_cache"] = False
 
         # keep track of which sequences are already finished
@@ -1113,7 +1119,7 @@ class IPUGenerationMixin(GenerationMixin):
 
         # Change: disable use_cache because it can't be statically compiled
         if "use_cache" in model_kwargs:
-            logger.warn("Overriding use_cache setting... - use_cache=False")
+            warnings.warn("Overriding use_cache setting... - use_cache=False", UserWarning)
             model_kwargs["use_cache"] = False
 
         beam_scores = torch.zeros((batch_size, num_beams), dtype=torch.float, device=input_ids.device)
