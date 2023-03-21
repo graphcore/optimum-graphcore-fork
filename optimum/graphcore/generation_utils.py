@@ -565,6 +565,7 @@ class IPUGenerationMixin(GenerationMixin):
                 )
 
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+            model_inputs["t"] = torch.tensor(cur_len - 1, dtype=torch.half)             # Change: provide position
 
             outputs = self._call_generate(
                 t=torch.tensor(cur_len - 1),
