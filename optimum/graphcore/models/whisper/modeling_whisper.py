@@ -24,7 +24,7 @@ from ...generation_utils import IPUGenerationMixin
 
 from torch import nn
 
-from transformers.models.whisper.modeling_whisper import WhisperEncoderLayer, WhisperAttention, WhisperEncoder, WhisperDecoder, WhisperDecoderLayer, WhisperPositionalEmbedding
+from transformers.models.whisper.modeling_whisper import WhisperEncoderLayer, WhisperAttention, WhisperEncoder, WhisperDecoder
 from transformers import WhisperConfig
 from transformers.modeling_outputs import (
     BaseModelOutput,
@@ -515,16 +515,6 @@ class PipelinedWhisperForConditionalGeneration(transformers.WhisperForConditiona
         for layer in self.model.encoder.layers:
             layer.__class__ = WhisperEncoderLayer if restore else _WhisperEncoderLayerClamp
 
-    def change_decoder_layer_class(self, restore: bool):
-        """Changes the decoder layer class to support static caching of key and value projections
-
-        Args:
-            restore: whether to restore the decoder layers to their original version or not.
-        """
-        for layer in self.model.decoder.layers:
-            layer.__class__ = WhisperDecoderLayer if restore else _WhisperDecoderLayerWithCache
-            layer.self_attn.__class__ = WhisperAttention if restore else _WhisperAttentionWithCache      
-            layer.encoder_attn.__class__ = WhisperAttention if restore else _WhisperAttentionWithCache      
 
     def change_encoder_and_decoder_classes(self, restore: bool):
         """Changes the encoder and decoder classes to update their forward pass so that they use our custom versions of
@@ -536,9 +526,6 @@ class PipelinedWhisperForConditionalGeneration(transformers.WhisperForConditiona
         self.model.encoder.__class__ = WhisperEncoder if restore else _WhisperEncoderWithCustomExpandMask
         self.model.decoder.__class__ = WhisperDecoder if restore else _WhisperDecoderWithCustomMakeCausalAndExpandMask
     
-    def change_positional_embedding(self, restore: bool):
-        self.model.decoder.embed_positions.__class__ = WhisperPositionalEmbedding if restore else _WhisperPositionalEmbedding
-
 
     def parallelize(self):
         super().parallelize()
@@ -583,51 +570,6 @@ class PipelinedWhisperForConditionalGeneration(transformers.WhisperForConditiona
         self.model.decoder.layer_norm = poptorch.BeginBlock(self.model.decoder.layer_norm, "Decoder Layer Norm", ipu_id=last_ipu)
         self.proj_out = poptorch.BeginBlock(self.proj_out, "Output Projection", ipu_id=last_ipu)
         return self
-
-    def forward(
-        self,
-        t: Optional[torch.LongTensor] = None,
-        input_features: Optional[torch.LongTensor] = None,
-        decoder_input_ids: Optional[torch.LongTensor] = None,
-        decoder_attention_mask: Optional[torch.LongTensor] = None,
-        head_mask: Optional[torch.Tensor] = None,
-        decoder_head_mask: Optional[torch.Tensor] = None,
-        cross_attn_head_mask: Optional[torch.Tensor] = None,
-        encoder_outputs: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
-        past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
-        decoder_inputs_embeds: Optional[Tuple[torch.FloatTensor]] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[Tuple[torch.Tensor], Seq2SeqModelOutput]:
-        # when encoder_outputs is passed as BaseModelOutput, it comes out as a dict... 
-        if return_dict and isinstance(encoder_outputs, dict):
-            encoder_outputs = BaseModelOutput(
-                last_hidden_state=encoder_outputs["last_hidden_state"],
-                hidden_states=encoder_outputs.get("hidden_states", None),
-                attentions=encoder_outputs.get("attentions", None)
-            )
-
-        return super().forward(
-            t,
-            input_features,
-            decoder_input_ids,
-            decoder_attention_mask,
-            head_mask,
-            decoder_head_mask,
-            cross_attn_head_mask,
-            encoder_outputs,
-            past_key_values,
-            decoder_inputs_embeds,
-            labels,
-            use_cache,
-            output_attentions,
-            output_hidden_states,
-            return_dict,
-        )
-
 
 
 
