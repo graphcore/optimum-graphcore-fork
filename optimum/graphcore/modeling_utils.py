@@ -423,7 +423,7 @@ class SerializedEmbedding(nn.Module):
             ]
         )
 
-    def deserialize(self):
+    def deserialize(self, freeze_weights=True):
         """
         Deserialize the internal wrapped embedding layer and return it as a
         `nn.Embedding` object.
@@ -569,11 +569,12 @@ class SplitLinear(torch.nn.Module):
         Returns:
             `nn.Linear` layer
         """
+        dtype = self.split_linear_layers[0].weight.dtype
         layer = nn.Linear(self.in_features, self.out_features, bias=False)
         with torch.no_grad():
-            layer.weight.copy_(torch.hstack([l.weight for l in self.split_linear_layers]))
+            layer.weight.copy_(torch.hstack([l.weight.detach() for l in self.split_linear_layers]))
         
-        return layer
+        return layer.to(dtype)
     
 class SharedEmbedding(nn.Module):
     """Wrapper around the shared embedding between the encoder and the decoder stacks.
