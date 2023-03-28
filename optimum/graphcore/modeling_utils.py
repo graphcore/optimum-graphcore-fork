@@ -529,6 +529,7 @@ class SplitLinear(torch.nn.Module):
         
         self.in_features = linear.in_features
         self.out_features = linear.out_features
+        input_linear_dtype = linear.weight.dtype
         if self.in_features % splits != 0:
             raise ValueError(f"Input dimension of :{self.in_features} must be divisible by {splits}")
         
@@ -538,16 +539,20 @@ class SplitLinear(torch.nn.Module):
             start = i * self.split_size
             end = (i + 1) * self.split_size
             lin = SerializedLinear(self.split_size, self.out_features, factor=serialization_factor, bias=False, mode=mode)
+            if input_linear_dtype == torch.float16:
+                lin = lin.half()
             # initialise linear layer using a section of`linear` weight, 
             with torch.no_grad():
                 lin.weight.copy_(linear.weight[:, start:end].detach())
             split_lin_layers.append(lin)
+        self.split_linear_layers = torch.nn.ModuleList(split_lin_layers)
             
         self.bias = None
         if linear.bias is not None:
-            self.bias = torch.nn.Parameter(linear.bias.detach())
-        self.split_linear_layers = torch.nn.ModuleList(split_lin_layers)
-    
+            self.bias = torch.nn.Parameter(torch.zeros_like(linear.bias))
+            with torch.no_grad():
+                self.bias.copy_(linear.bias.detach())
+                
     def forward(self, x):
         # each linear layer processes a partition of the input
         out = None
@@ -571,10 +576,13 @@ class SplitLinear(torch.nn.Module):
         """
         dtype = self.split_linear_layers[0].weight.dtype
         layer = nn.Linear(self.in_features, self.out_features, bias=False)
+        if dtype == torch.float16:
+            layer = layer.half()
         with torch.no_grad():
             layer.weight.copy_(torch.hstack([l.weight.detach() for l in self.split_linear_layers]))
-        
-        return layer.to(dtype)
+            if self.bias is not None:
+                layer.bias.copy_(self.bias)
+        return layer
     
 class SharedEmbedding(nn.Module):
     """Wrapper around the shared embedding between the encoder and the decoder stacks.
