@@ -82,9 +82,10 @@ class DecoderWrapper(nn.Module):
         Returns:
             The output logits at position `t` only
         """
-        outputs = self.pipelined_model(**model_inputs)
+        outputs = self.pipelined_model(t=t,**model_inputs)
 
-        next_token_logits = poptorch.dynamic_slice(outputs.logits, 1, t, 1, 1)
+        # next_token_logits = poptorch.dynamic_slice(outputs.logits, 1, t, 1, 1)
+        next_token_logits = outputs.logits
         return type(outputs)(
             loss=None,
             logits=next_token_logits,
@@ -565,7 +566,6 @@ class IPUGenerationMixin(GenerationMixin):
                 )
 
             model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
-            model_inputs["t"] = torch.tensor(cur_len - 1, dtype=torch.half)             # Change: provide position
 
             outputs = self._call_generate(
                 t=torch.tensor(cur_len - 1),
