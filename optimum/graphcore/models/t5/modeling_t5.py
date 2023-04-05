@@ -329,6 +329,8 @@ class PipelinedT5ForConditionalGeneration(T5ForConditionalGeneration, PipelineMi
                 self.shared.num_embeddings,
                 bias=False,
             )
+            if self.lm_head.weight.dtype == torch.float16:
+                old_lm_head = old_lm_head.half()
             old_lm_head.load_state_dict(self.lm_head.state_dict())
             self.lm_head = old_lm_head
             # TODO: is it needed to check?

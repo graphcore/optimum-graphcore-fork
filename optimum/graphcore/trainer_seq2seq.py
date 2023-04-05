@@ -20,7 +20,7 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from optimum.utils import logging
-
+from poptorch._impl import unwrapModelIfNecessary, rewrapModelIfNecessary
 from .trainer import IPUTrainer
 
 
@@ -32,6 +32,10 @@ class IPUSeq2SeqTrainer(IPUTrainer):
         if prediction_loss_only:
             return super()._wrap_and_compile_model_for_evaluation(dataloader, prediction_loss_only)
 
+        # Unwrap the model, including parameter and buffer annoations and the
+        # model as a whole. 
+        unwrapModelIfNecessary(self.model)
+        
         # reparallelize for generation
         self.model = self.model.deparallelize().parallelize(for_generation=True)
 
@@ -40,7 +44,11 @@ class IPUSeq2SeqTrainer(IPUTrainer):
         # (attribute added by IPUGenerationMixin::_call_generate)
         # are the actual models attached to the device
         return self.model
-
+    
+    def _rewrap_model_for_training(self):
+        # Restores the PoptorchParameter and PoptorchBuffer annotations in the model
+        rewrapModelIfNecessary(self.model)
+        
     def evaluate(
         self,
         eval_dataset: Optional[Dataset] = None,
@@ -80,7 +88,9 @@ class IPUSeq2SeqTrainer(IPUTrainer):
         """
         self._max_length = max_length if max_length is not None else self.args.generation_max_length
         self._num_beams = num_beams if num_beams is not None else self.args.generation_num_beams
-        return super().evaluate(eval_dataset, ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix)
+        eval_output = super().evaluate(eval_dataset, ignore_keys=ignore_keys, metric_key_prefix=metric_key_prefix)
+        self._rewrap_model_for_training()
+        return eval_output
 
     def predict(
         self,
@@ -181,7 +191,7 @@ class IPUSeq2SeqTrainer(IPUTrainer):
 
         # prepare generation inputs
         # some encoder-decoder models can have varying encoder's and thus
-        # varying model input names
+        # varying model input namest
         if hasattr(self.model, "encoder") and self.model.encoder.main_input_name != self.model.main_input_name:
             generation_inputs = inputs[self.model.encoder.main_input_name]
         else:
