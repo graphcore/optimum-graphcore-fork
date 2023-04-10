@@ -423,7 +423,7 @@ class SerializedEmbedding(nn.Module):
             ]
         )
 
-    def deserialize(self, freeze_weights=True):
+    def deserialize(self):
         """
         Deserialize the internal wrapped embedding layer and return it as a
         `nn.Embedding` object.
