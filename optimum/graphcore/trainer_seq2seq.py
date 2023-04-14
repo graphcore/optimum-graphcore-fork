@@ -33,7 +33,10 @@ class IPUSeq2SeqTrainer(IPUTrainer):
             return super()._wrap_and_compile_model_for_evaluation(dataloader, prediction_loss_only)
         
         # reparallelize for generation
-        self.model = self.model.deparallelize().parallelize(for_generation=True)
+        self.model = self.model.deparallelize()
+        self.ipu_config.mode = "inference"
+        self.model.ipu_config.mode = "inference"
+        self.model.parallelize(for_generation=True)
 
         # let IPUGenerationMixin::_call_generate handle compilation of the model
         # note though that self.model.poptorch_decoder and self.model.poptorch_encoder
@@ -42,7 +45,10 @@ class IPUSeq2SeqTrainer(IPUTrainer):
         return self.model
     
     def _reparallelize_model_for_training(self):
-        self.model = self.model.deparallelize().parallelize()
+        self.model = self.model.deparallelize()
+        self.ipu_config.mode = "training"
+        self.model.ipu_config.mode = "training"
+        self.model.parallelize()
         
     def evaluate(
         self,

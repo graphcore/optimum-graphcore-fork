@@ -356,6 +356,10 @@ class IPUConfig(BaseConfig):
 
         # Enable stochastic rounding (recommended for training with FP16)
         opts.Precision.enableStochasticRounding(not for_inference)
+        
+        # TEMPORARY 
+        # enable floating point exceptions when training
+        opts.Precision.enableFloatingPointExceptions(not for_inference)
 
         # Half precision partials for matmuls and convolutions
         if self.enable_half_partials:

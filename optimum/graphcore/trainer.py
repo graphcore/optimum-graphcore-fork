@@ -889,9 +889,10 @@ class IPUTrainer:
             wrapped = model
         elif training:
             if self.training_model is None:
-                model.deparallelize()
+                # model.deparallelize()
+                self.ipu_config.model = "training"
                 model.ipu_config.mode = "training"
-                model.parallelize()
+                # model.parallelize()
                 self.training_model = poptorch.trainingModel(
                     model.train(), options=self.opts, optimizer=self.optimizer
                 )
@@ -899,6 +900,7 @@ class IPUTrainer:
         else:
             if self.inference_model is None:
                 model.deparallelize()
+                self.ipu_config.model = "training"
                 model.ipu_config.mode = "inference"
                 model.parallelize()
                 self.inference_model = poptorch.inferenceModel(model.eval(), options=self.eval_opts)
@@ -1336,7 +1338,6 @@ class IPUTrainer:
             self._total_loss_scalar += tr_loss_scalar
             self._globalstep_last_logged = self.state.global_step
             self.store_flos()
-            print(logs)
             self.log(logs)
 
         metrics = None

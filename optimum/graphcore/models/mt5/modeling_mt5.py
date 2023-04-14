@@ -124,7 +124,7 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
         PipelineMixin.parallelize(self)
 
         logger.info("-------------------- Device Allocation --------------------")
-        logger.info("Embedding  --> IPU 0-1")
+        logger.info("Embedding  --> IPU 0")
 
         # in training mode, this must be the case otherwise the model will not fit
         # this requires training and inference specific settings in the IPUConfig
