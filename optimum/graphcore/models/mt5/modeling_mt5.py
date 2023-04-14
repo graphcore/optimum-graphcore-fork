@@ -110,25 +110,19 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
         You should call this before doing `save_pretrained` so that the `model.state_dict` is
         fully compatible with `transformers.T5ForConditionalGeneration`.
         """
-        # T5ForConditionalGeneration has a deparallelize method, so make sure that the PipelineMixin one is used here.
-        PipelineMixin.deparallelize(self)
-
-        self.encoder_and_decoder_embeddings_computation(False)
-        # self.scale_down_weights(factor=1, restore=True)
-
-        self.encoder.__class__ = T5Stack
-        self.decoder.__class__ = T5Stack
-
-        for block in self.encoder.block:
-            block.__class__ = T5Block
-        for block in self.decoder.block:
-            block.__class__ = T5Block
+        # Prevent `PipelinedT5ForConditionalGeneration.deparallelize` from deserialising
+        # the embedding, we will do it below
+        original_embedding_serialization_factor = self.ipu_config.embedding_serialization_factor
+        self.ipu_config.embedding_serialization_factor = 1
+        PipelinedT5ForConditionalGeneration.deparallelize(self)
+        self.ipu_config.embedding_serialization_factor = original_embedding_serialization_factor
 
         if self.lm_head.__class__ == _IndexedInputLinear:
             self.lm_head = self.lm_head.wrapped_linear
         self.lm_head = self.lm_head.deserialize()
         self.shared = self.shared.deserialize()
 
+        return self
 
         return self
 
