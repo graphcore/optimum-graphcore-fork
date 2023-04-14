@@ -12,29 +12,20 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
-import warnings
 from typing import Optional, Tuple, Union
 
 import torch
-import torch.nn as nn
-from torch import Tensor
 
 import poptorch
 from optimum.utils import logging
 from transformers import MT5ForConditionalGeneration
-from transformers.modeling_outputs import BaseModelOutput, Seq2SeqLMOutput
-from transformers.models.t5.modeling_t5 import __HEAD_MASK_WARNING_MSG, T5Block, T5Stack
+from transformers.modeling_outputs import Seq2SeqLMOutput
 
-from ...generation_utils import IPUGenerationMixin, _IndexedInputLinear
+from ...generation_utils import _IndexedInputLinear
 from ...modeling_utils import (
-    PipelineMixin,
     SerializedEmbedding,
-    SharedEmbedding,
     SplitLinear,
-    get_layer_ipu,
-    recomputation_checkpoint,
     register,
-    split_encoder_decoder_ipu_config,
 )
 from ..t5.modeling_t5 import PipelinedT5ForConditionalGeneration
 
@@ -44,20 +35,6 @@ logger = logging.get_logger(__name__)
 
 @register(MT5ForConditionalGeneration)
 class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, PipelinedT5ForConditionalGeneration):
-    # exact copy from PipelinedT5ForConditionalGeneration
-    @property
-    def is_encoder_and_decoder_embeddings_computation_shared(self):
-        return isinstance(self.shared, SharedEmbedding)
-    
-    def encoder_and_decoder_embeddings_computation(self, use_shared_embedding: bool):
-        """Sets the MT5ForConditionalGeneration shared embedding layer to SharedEmbedding that combines the computation under one layer.
-
-        Args:
-            use_shared_embedding: whether to use SharedEmbedding or not.
-        """
-        return PipelinedT5ForConditionalGeneration.encoder_and_decoder_embeddings_computation(self, use_shared_embedding)
-
-    # modified from PipelinedT5ForConditionalGeneration
     def parallelize(self, for_generation=False):
         """
         Transform the model to run in an IPU pipeline.
@@ -108,7 +85,6 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
         logger.info("-----------------------------------------------------------")
         return self
     
-    # modified from PipelinedT5ForConditionalGeneration
     def deparallelize(self):
         """
         Undo the changes to the model done by `parallelize`.
