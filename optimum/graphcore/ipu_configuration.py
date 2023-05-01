@@ -487,32 +487,6 @@ class IPUConfig(BaseConfig):
         """
         return self.for_pod_type(pod_type)._to_options(for_inference=for_inference, compile_only=compile_only)
 
-    def to_dict(self) -> Dict[str, Any]:
-        """
-        Same as super().to_dict() but with the additional removal of private attributes
-
-        Returns:
-            `Dict[str, Any]`: Dictionary of all the attributes that make up this configuration instance.
-        """
-
-        original_mode = self.mode
-
-        self.train()
-        output = super().to_dict()
-
-        # revert private training attributes to match the public names
-        new_output = {}
-        prefix = "training_"
-        for attr_name, attr_value in output.items():
-            if attr_name.startswith(prefix):
-                new_output[attr_name[len(prefix) :]] = attr_value
-            else:
-                new_output[attr_name] = attr_value
-
-        self._mode = original_mode
-
-        return new_output
-
     def batch_size_factor(self, for_inference: bool = False, pod_type: Optional[str] = None) -> int:
         """
         Computes the factor to apply to the micro batch size to get the combined batch size.
