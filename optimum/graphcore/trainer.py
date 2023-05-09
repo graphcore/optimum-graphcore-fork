@@ -2059,7 +2059,7 @@ class IPUTrainer:
             if has_labels:
                 loss, outputs = self.compute_loss(model, inputs, return_outputs=True)
                 # If last batch is incomplete, some losses might be NaN because nothing was computed on the
-                # corresponding POD, ignoring them is necessary to not mess up evaluation loss computation
+                # corresponding Pod, ignoring them is necessary to not mess up evaluation loss computation
                 if is_last_batch:
                     loss = loss[~loss.isnan()]
                 loss = loss.detach()

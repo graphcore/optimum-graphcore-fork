@@ -36,16 +36,16 @@ ALLOWED_POD_TYPES = ["pod4", "pod8", "pod16", "pod32", "pod64"]
 
 class IPUConfig(BaseConfig):
     """
-    Class for PopArt and PopTorch configuration. Handles the conversion to poptorch options as well as configuration
-    pod type specialization.
+    Class for configuring PopArt and PyTorch for the IPU. Handles the conversion to `poptorch` options as well as configuration of the
+    IPU-Pod type specialization.
 
     Args:
         seed (`int`, *optional*):
             Sets the seed for the random number generator on the IPU.
         auto_loss_scaling (`bool`, *optional*, defaults to `False`):
-            Whether automatic loss scaling is enabled on the IPU.
-            When using float16/half values for activations, gradients, and weights, the loss value needs to be scaled by
-            a constant factor to avoid underflow/overflow. This adjustment is known as loss scaling. This setting
+            If `True`, enables automatic loss scaling on the IPU.
+            When using float16/half-precision values for activations, gradients, and weights, the loss value needs to be scaled by
+            a constant factor to avoid underflows or overflows. This adjustment is known as loss scaling. This setting
             automatically sets a global loss scaling factor during training.
             **Note: This is an experimental feature and may not behave as expected.**
         executable_cache_dir (`str`, *optional*, defaults to `""`):
@@ -55,13 +55,15 @@ class IPUConfig(BaseConfig):
 
         replication_factor (`int`, *optional*, defaults to 1):
             The number of replicas for data-parallelism during training. It depends on the size of the pipeline as well
-            as the number of IPUs available. For example: on a Pod16, with a 4-IPU pipeline, replication_factor must
-            be betwen 1 and 4.
+            as the number of IPUs available. For example: on a Pod16, with a 4-IPU pipeline, the replication_factor must
+            be between 1 and 4.
         inference_replication_factor (`int`, *optional*, defaults to 1):
-            Same as `replication_factor` for inference.
+            The number of replicas for data-parallelism during inference. It depends on the size of the pipeline as well
+            as the number of IPUs available. For example: on a Pod16, with a 4-IPU pipeline, the replication_factor must
+            be between 1 and 4.
         gradient_accumulation_steps (`int`, *optional*, defaults to 1):
             Number of micro-batches to accumulate for the gradient calculation.
-            Accumulates the gradient gradient_accumulation times before updating the model using the gradient.
+            Accumulates the gradient `gradient_accumulation` times before updating the model using the gradient.
 
         > Parameters related to parallelism
 
@@ -81,7 +83,7 @@ class IPUConfig(BaseConfig):
         > Parameters for memory management
 
         optimizer_state_offchip (`bool`, *optional*, defaults to `True`):
-            Whether to use the off chip memory to store the optimizer state or to use the on chip memory.
+            If `True`, uses the off-chip memory to store the optimizer state. If `False`, uses the on-chip memory.
         replicated_tensor_sharding (`bool`, *optional*, defaults to `False`):
             Shards the optimizer between replicas with zero-redundancy.
         matmul_proportion (`List[float]` or `float`, *optional*, defaults to 0.2):
@@ -96,21 +98,20 @@ class IPUConfig(BaseConfig):
         inference_matmul_proportion (`List[int]`):
             Same as `matmul_proportion` for inference only.
         enable_half_partials (`bool`, *optional*, defaults to `True`):
-            Whether the data type of partial results for matrix multiplication and convolution operators should be
-            float16 or not.
+            If `True`, sets the data type of partial results for matrix multiplication and convolution operators to float16.
         embedding_serialization_factor (`int`, *optional*, defaults to 1):
-            The factor to use to serialze embeddings. Nothing happens if `embedding_serialization_factor = 1`, and for
-            `embedding_serialization_factor > 1`, the `torch.nn.Embedding` layer is replaced by a
+            The factor to use to serialize embeddings. Nothing happens if `embedding_serialization_factor = 1`. For
+            `embedding_serialization_factor > 1`, the `torch.nn.Embedding` layer is replaced with a
             `optimum.graphcore.modeling_utils.SerializedEmbedding` layer.
         recompute_checkpoint_every_layer (`bool`, *optional*, defaults to `False`):
-            Whether to use gradient checkpointing at the end of every layer. It can help in reducing the memory impact.
+            If `True`, uses gradient checkpointing at the end of every layer. It can help to reduce the memory impact.
 
-        > Parameters related to host / device synchronization
+        > Parameters related to host/device synchronization
 
         device_iterations (`int`, *optional*, defaults to 1):
             Number of iterations the device should run over the data before returning to the user during training. This
-            is equivalent to running the IPU in a loop over that the specified number of iterations, with a new batch of
-            data each time. However, increasing deviceIterations is more efficient because the loop runs on the IPU
+            is equivalent to running the IPU in a loop over the specified number of iterations, with a new batch of
+            data each time. However, increasing the number of device iterations is more efficient because the loop runs on the IPU
             directly.
         inference_device_iterations (`int`, *optional*, defaults to 1):
             Same as `device_iterations` for inference.
@@ -223,12 +224,12 @@ class IPUConfig(BaseConfig):
         self, config_attribute_name: str, config_attribute: Union[Any, Dict[str, Any]], pod_type: Optional[str]
     ) -> Any:
         """
-        Prepares a config attribute by extracting the proper value for this attribute considering the POD type.
+        Prepares a config attribute by extracting the proper value for this attribute based on the Pod type.
 
         Args:
-            config_attribute_name: The config attribute name (i.e. the name of the config field).
+            config_attribute_name: The name of the config attribute.
             config_attribute: The config attribute to extract the value from.
-            pod_type: The POD type.
+            pod_type: The type of Pod to be used.
 
         Returns:
             The extracted config attribute value.
@@ -240,33 +241,33 @@ class IPUConfig(BaseConfig):
 
         if pod_type is None and "default" not in config_attribute:
             raise RuntimeError(
-                f"No POD type was specified and no default value was provided for {config_attribute_name}, cannot infer"
+                f"No Pod type was specified and no default value was provided for {config_attribute_name}, cannot infer"
                 " which value to use"
             )
         elif pod_type is None:
             return config_attribute["default"]
         elif pod_type not in ALLOWED_POD_TYPES:
             raise ValueError(
-                f"{pod_type} is not a correct value for a POD type, supported POD types: {', '.join(ALLOWED_POD_TYPES)}"
+                f"{pod_type} is not a correct value for a Pod type, supported Pod types: {', '.join(ALLOWED_POD_TYPES)}"
             )
         elif pod_type not in config_attribute:
             raise KeyError(
-                f"the {config_attribute_name} configuration field does not contain a value for POD type {pod_type}"
+                f"The {config_attribute_name} configuration field does not contain a value for Pod type {pod_type}"
             )
         else:
             return config_attribute[pod_type]
 
     def for_pod_type(self, pod_type: Optional[str] = None) -> "IPUConfig":
         """
-        Creates an `IPUConfig` specialized for a POD type.
+        Creates an `IPUConfig` instance for a specific Pod type.
 
         Args:
             pod_type (`str`, *optional*):
-                The POD type. If left to None, either the default value or the lowest value will be used for each
+                The Pod type. If not specified, either the default value or the lowest value will be used for each
                 configuration field.
 
         Returns:
-            `IPUConfig`: The IPUConfig instance.
+            `IPUConfig`: The `IPUConfig` instance.
         """
         config_dict = self.to_dict()
         config_dict = {k: self._prepare_config_attribute_for_pod_type(k, v, pod_type) for k, v in config_dict.items()}
@@ -318,7 +319,7 @@ class IPUConfig(BaseConfig):
         if self.seed:
             opts.randomSeed(self.seed)
 
-        # Enable Replicated Tensor Sharding (RTS) of optimizer state
+        # Enable replicated tensor sharding of optimizer state
         # with optimizer state residing either on-chip or in DRAM
         opts.TensorLocations.setOptimizerLocation(
             poptorch.TensorLocationSettings()
@@ -391,31 +392,30 @@ class IPUConfig(BaseConfig):
         self, for_inference: bool = False, compile_only: bool = False, pod_type: Optional[str] = None
     ) -> poptorch.Options:
         """
-        Creates a `poptorch.Options` from the `IPUConfig`.
+        Creates a `poptorch.Options` instance from the `IPUConfig` instance.
 
         Args:
             for_inference (`bool`, defaults to `False`):
-                If True, the resulting poptorch.Options will be adapted inference, it will be adapted for training
-                otherwise.
+                If `True`, the resulting `poptorch.Options` will be adapted for inference. If `False`, the resulting `poptorch.Options` will be adapted for training.
             compile_only (`bool`, defaults to `False`):
-                If True, compilation will be performed offline, no IPUs required.
+                If `True`, compilation will be performed offline (no IPUs required).
             pod_type (`str`, *optional*):
-                The POD type to specialize the `poptorch.Options` for.
+                The Pod type to customize `poptorch.Options` for.
 
         Returns:
-            `poptorch.Options`: The option representing the `IPUConfig`.
+            `poptorch.Options`: The options representing the `IPUConfig` instance.
         """
         return self.for_pod_type(pod_type)._to_options(for_inference=for_inference, compile_only=compile_only)
 
     def batch_size_factor(self, for_inference: bool = False, pod_type: Optional[str] = None) -> int:
         """
-        Computes the factor to apply to the micro batch size to get the combined batch size.
+        Computes the factor to apply to the micro batch size to calculate the combined batch size.
 
         Args:
             for_inference (`bool`, defaults to `False`):
-                Whether the factor is being use to compute the batch size for inference or not.
+                If `True`, indicates that the factor is being use to compute the batch size for inference.
             pod_type (`str`, *optional*):
-                The pod type that is being used. This is needed because the batch size factor can be pod type dependent.
+                The Pod type that is being used. This is needed because the batch size factor can be dependent on the Pod type.
 
         Returns:
             `int`: The batch size factor.
@@ -430,13 +430,13 @@ class IPUConfig(BaseConfig):
 
     def update_from_string(self, update_str: str):
         """
-        Updates attributes of this class with attributes from `update_str`.
+        Updates attributes of the `IPUConfig` class with attributes from `update_str`.
 
         The expected format is ints, floats and strings as is, and for booleans use `true` or `false`, and for lists
         use `[a b c d]`. For example: `"n_embd=10,resid_pdrop=0.2,scale_attn_weights=false,summary_type=cls_index,
         matmul_proportion=[0.08 0.2 0.25 0.25]"`.
 
-        The keys to change have to already exist in the config object.
+        The keys to change must already exist in the config object.
 
         Args:
             update_str (`str`): String with attributes that should be updated for this class.
@@ -446,7 +446,7 @@ class IPUConfig(BaseConfig):
         d = dict(x.split("=") for x in update_str.split(","))
         for k, v in d.items():
             if not hasattr(self, k):
-                raise ValueError(f"key {k} isn't in the original config dict")
+                raise ValueError(f"Key {k} isn't in the original config dict")
 
             old_v = getattr(self, k)
             if isinstance(old_v, bool):
@@ -455,7 +455,7 @@ class IPUConfig(BaseConfig):
                 elif v.lower() in ["false", "0", "n", "no"]:
                     v = False
                 else:
-                    raise ValueError(f"can't derive true or false from {v} (key {k})")
+                    raise ValueError(f"Can't derive true or false from {v} (key {k})")
             elif isinstance(old_v, int):
                 v = int(v)
             elif isinstance(old_v, float):

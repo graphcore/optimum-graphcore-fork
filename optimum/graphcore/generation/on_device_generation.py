@@ -40,11 +40,11 @@ class OnDeviceBeamSearch(torch.nn.Module):
 class OnDeviceGenerationModel(torch.nn.Module):
     """
     A wrapper around a user generation model that effectively runs the entire generation loop
-    on device without returning to host after each generated token. Instead, each generated token is stored
-    in a torch buffer, and appended to the input at the next time step.
+    on the device without returning to the host after each generated token. Instead, each generated token is stored
+    in a `torch` buffer, and is appended to the input at the next time step.
     Suppose the input tensor is of shape [B, C]; B = batch size, C = context length. To generate up to
-    a max sequence length of S, device iterations should be set to <= S - C.  Further, this is only compatible
-    with poptorch.ShardedExecution.
+    a maximum sequence length of S, device iterations should be set to <= S - C.  Further, this is only compatible
+    with `poptorch.ShardedExecution`.
     """
 
     def __init__(
@@ -90,7 +90,7 @@ class OnDeviceGenerationModel(torch.nn.Module):
             input_ids = kwargs.pop(input_ids_key, None)
             if input_ids is None:
                 raise ValueError(
-                    f"On device generation model was called with kwargs that are missing both `decoder_input_ids` "
+                    f"The on device generation model was called with kwargs that are missing both `decoder_input_ids` "
                     "and `input_ids`. Please provide one of these as inputs (default is `decoder_input_ids`)."
                 )
 
