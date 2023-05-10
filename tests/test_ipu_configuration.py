@@ -23,97 +23,21 @@ from typing import Any, Dict, Optional, Set
 import pytest
 
 from optimum.graphcore import IPUConfig
-from optimum.graphcore.ipu_configuration import ALLOWED_POD_TYPES
-from optimum.graphcore.modeling_utils import (
-    IncompatibleIPUConfigError,
-    get_layer_ipu,
-    split_encoder_decoder_ipu_config,
-)
+from optimum.graphcore.ipu_configuration import IncompatibleIPUConfigError
+from optimum.graphcore.modeling_utils import get_layer_ipu, split_encoder_decoder_ipu_config
 from poptorch import OutputMode
 
 
-def random_value_from_initial_value(initial_value):
-    if isinstance(initial_value, bool):
-        return bool(random.randint(0, 1))
-    elif isinstance(initial_value, int):
-        return random.randint(1, 10)
-    elif isinstance(initial_value, float):
-        return random.random()
-    elif isinstance(initial_value, str):
-        return "".join(random.choices(string.ascii_lowercase, k=len(initial_value)))
-    elif isinstance(initial_value, Iterable):
-        return type(initial_value)([random_value_from_initial_value(x) for x in initial_value])
-    elif initial_value is None:
-        return None
-    else:
-        raise TypeError(f"cannot create random value from initial value of type {type(initial_value)}")
-
-
-def create_pod_specific_attribute(
-    initial_value: Any, add_default_value: bool = False, remove_pod_types: Optional[Set[str]] = None
-) -> Dict[str, Any]:
-    p = random.random()
-    if p < 0.5:
-        return initial_value
-    if remove_pod_types is None:
-        remove_pod_types = set()
-    values = {k: random_value_from_initial_value(initial_value) for k in set(ALLOWED_POD_TYPES) - remove_pod_types}
-    if add_default_value:
-        values["default"] = random_value_from_initial_value(initial_value)
-    return values
-
-
-def create_ipu_config(with_default_values: bool = False, remove_pod_types: Optional[Set[str]] = None) -> IPUConfig:
+def create_ipu_config() -> IPUConfig:
     initial_dict = IPUConfig().to_dict()
-    initial_dict = {
-        k: create_pod_specific_attribute(v, add_default_value=with_default_values, remove_pod_types=remove_pod_types)
-        for k, v in initial_dict.items()
-    }
     allowed_output_modes = ["all", "sum", "final"]
-    if isinstance(initial_dict["output_mode"], dict):
-        initial_dict["output_mode"] = {k: random.choice(allowed_output_modes) for k in initial_dict["output_mode"]}
-    else:
-        initial_dict["output_mode"] = random.choice(allowed_output_modes)
+    initial_dict["output_mode"] = random.choice(allowed_output_modes)
     # Setting this setting to False as it is currently not supported and will throw an error.
     initial_dict["execute_encoder_on_cpu_for_generation"] = False
-    # Edge case where replication_factor=1 and replicated_tensor_sharding=True which will get overriden to
-    # replicated_tensor_sharding=False.
-    if isinstance(initial_dict["replication_factor"], dict) and isinstance(
-        initial_dict["replicated_tensor_sharding"], dict
-    ):
-        for pod_type in initial_dict["replication_factor"].keys():
-            if initial_dict["replication_factor"][pod_type] == 1:
-                initial_dict["replicated_tensor_sharding"][pod_type] = False
     return IPUConfig.from_dict(initial_dict)
 
 
 class IPUConfigTester(unittest.TestCase):
-    def test_for_pod_type(self):
-        ipu_config = create_ipu_config()
-        for pod_type in ALLOWED_POD_TYPES:
-            pod_type_dict = {k: v[pod_type] if isinstance(v, dict) else v for k, v in ipu_config.to_dict().items()}
-            ipu_config_for_pod_type = ipu_config.for_pod_type(pod_type)
-            self.assertEqual(pod_type_dict, ipu_config_for_pod_type.to_dict())
-
-    def test_for_pod_type_with_default(self):
-        ipu_config = create_ipu_config(with_default_values=True)
-        pod_type_dict = {k: v["default"] if isinstance(v, dict) else v for k, v in ipu_config.to_dict().items()}
-        ipu_config_for_pod_type = ipu_config.for_pod_type()
-        print(pod_type_dict)
-        print(ipu_config_for_pod_type.to_dict())
-        self.assertEqual(pod_type_dict, ipu_config_for_pod_type.to_dict())
-
-    def test_for_pod_type_with_unallowed_pod_type(self):
-        ipu_config = create_ipu_config()
-        with pytest.raises(ValueError):
-            ipu_config.for_pod_type("blablabla")
-
-    def test_for_pod_type_not_in_config_attribute(self):
-        pod_type_to_remove = random.choice(ALLOWED_POD_TYPES)
-        ipu_config = create_ipu_config(remove_pod_types={pod_type_to_remove})
-        with pytest.raises(KeyError):
-            ipu_config.for_pod_type(pod_type_to_remove)
-
     def _test_to_options(self, for_inference: bool):
         def make_poptorch_options_comparable_to_ipu_config(options_dict):
             options_dict = copy.deepcopy(options_dict)
@@ -168,26 +92,11 @@ class IPUConfigTester(unittest.TestCase):
             d2 = {k: v for k, v in d2.items() if k in d1}
             return d1, d2
 
-        pod_type = random.choice(ALLOWED_POD_TYPES)
-        # Case 1: the IPUConfig is not "specialized" and contains values for many pod types.
         ipu_config = create_ipu_config()
-        options = ipu_config.to_options(for_inference=for_inference, pod_type=pod_type)
-        ipu_config_dict = ipu_config.for_pod_type(pod_type).to_dict()
-        if for_inference:
-            ipu_config_dict["replication_factor"] = ipu_config_dict["inference_replication_factor"]
-            ipu_config_dict["device_iterations"] = ipu_config_dict["inference_device_iterations"]
-            ipu_config_dict["gradient_accumulation_steps"] = 1
-            ipu_config_dict["output_mode"] = "all"
-        ipu_config_dict, options_dict = intersection_of_dicts(
-            ipu_config_dict, make_poptorch_options_comparable_to_ipu_config(options.toDict())
-        )
-        self.assertEqual(ipu_config_dict, options_dict)
-        # Case 2: the IPUConfig is specialized, no pod type needs to be specified to create the poptorch.Options.
-        ipu_config = create_ipu_config().for_pod_type(pod_type)
         options = ipu_config.to_options(for_inference=for_inference)
         ipu_config_dict = ipu_config.to_dict()
         if for_inference:
-            ipu_config_dict["replication_factor"] = ipu_config_dict["inference_replication_factor"]
+            ipu_config_dict["training_replication_factor"] = ipu_config_dict["inference_replication_factor"]
             ipu_config_dict["device_iterations"] = ipu_config_dict["inference_device_iterations"]
             ipu_config_dict["gradient_accumulation_steps"] = 1
             ipu_config_dict["output_mode"] = "all"
@@ -203,13 +112,11 @@ class IPUConfigTester(unittest.TestCase):
         return self._test_to_options(True)
 
     def _test_batch_size_factor(self, for_inference: bool):
-        pod_type = random.choice(ALLOWED_POD_TYPES)
         # Case 1: the IPUConfig is not "specialized" and contains values for many pod types.
         ipu_config = create_ipu_config()
-        batch_size_factor = ipu_config.batch_size_factor(for_inference=for_inference, pod_type=pod_type)
-        ipu_config = ipu_config.for_pod_type(pod_type)
+        batch_size_factor = ipu_config.batch_size_factor(for_inference=for_inference)
         replication_factor = (
-            ipu_config.inference_replication_factor if for_inference else ipu_config.replication_factor
+            ipu_config.inference_replication_factor if for_inference else ipu_config.training_replication_factor
         )
         gradient_accumulation_steps = 1 if for_inference else ipu_config.gradient_accumulation_steps
         device_iterations = ipu_config.inference_device_iterations if for_inference else ipu_config.device_iterations
@@ -218,10 +125,10 @@ class IPUConfigTester(unittest.TestCase):
             batch_size_factor,
         )
         # Case 2: the IPUConfig is specialized, no pod type needs to be specified to compute the batch size factor.
-        ipu_config = create_ipu_config().for_pod_type(pod_type)
+        ipu_config = create_ipu_config()
         batch_size_factor = ipu_config.batch_size_factor(for_inference=for_inference)
         replication_factor = (
-            ipu_config.inference_replication_factor if for_inference else ipu_config.replication_factor
+            ipu_config.inference_replication_factor if for_inference else ipu_config.training_replication_factor
         )
         gradient_accumulation_steps = 1 if for_inference else ipu_config.gradient_accumulation_steps
         device_iterations = ipu_config.inference_device_iterations if for_inference else ipu_config.device_iterations
@@ -268,12 +175,6 @@ class IPUConfigTester(unittest.TestCase):
             layer_ipu = get_layer_ipu(ipu_config, 4)
 
         # layers_per_ipu and ipus_per_replica mismatch raises
-        ipu_config = IPUConfig(layers_per_ipu=[1, 2], ipus_per_replica=4)
-        with pytest.raises(
-            IncompatibleIPUConfigError,
-            match=r"layers_per_ipu has non-default value set, but its length does not match ipus_per_replica",
-        ):
-            layer_ipu = get_layer_ipu(ipu_config, 3)
         ipu_config = IPUConfig(layers_per_ipu=[1, -1], ipus_per_replica=4)
         with pytest.raises(
             IncompatibleIPUConfigError,
@@ -303,14 +204,6 @@ class IPUConfigTester(unittest.TestCase):
         ipu_config = IPUConfig(layers_per_ipu=[-1, 2, -1, 2])
         layer_ipu = get_layer_ipu(ipu_config, 7)
         self.assertEqual(layer_ipu, [0, 1, 1, 2, 2, 3, 3])
-
-        # Invalid values
-        ipu_config = IPUConfig(layers_per_ipu=[2, -2])
-        with pytest.raises(IncompatibleIPUConfigError, match=r"Invalid values in layers_per_ipu"):
-            layer_ipu = get_layer_ipu(ipu_config, 6)
-        ipu_config = IPUConfig(ipus_per_replica=0)
-        with pytest.raises(IncompatibleIPUConfigError, match=r"Invalid value for ipus_per_replica"):
-            layer_ipu = get_layer_ipu(ipu_config, 6)
 
     def test_execution_mode_specific_options(self):
         ipu_config = IPUConfig(
@@ -347,13 +240,6 @@ class IPUConfigTester(unittest.TestCase):
         self.assertEqual(e_ipu_config.ipus_per_replica, 1)
         self.assertEqual(d_ipu_config.layers_per_ipu, [7])
         self.assertEqual(d_ipu_config.ipus_per_replica, 1)
-
-        # Reading and writing `ManagedAttribute`s when mode is invalid
-        ipu_config.mode = "invalid"
-        with pytest.raises(AssertionError, match=r"IPUConfig\.mode is invalid, must be one of:"):
-            ipu_config.layers_per_ipu
-        with pytest.raises(AssertionError, match=r"IPUConfig\.mode is invalid, must be one of:"):
-            ipu_config.layers_per_ipu = [1]
 
         # ipus_per_replica not specified
         ipu_config = IPUConfig(training_layers_per_ipu=[1, 2, 3, 4])
@@ -453,3 +339,102 @@ class IPUConfigTester(unittest.TestCase):
         self.assertEqual(e_ipu_config.ipus_per_replica, 4)
         self.assertEqual(d_ipu_config.layers_per_ipu, [0, 7])
         self.assertEqual(d_ipu_config.ipus_per_replica, 2)
+
+    def test_attribute_value_validation(self):
+        ipu_config = IPUConfig()
+
+        # *layers_per_ipu attributes (List[int>=-1]) cannot contain
+        # values less than -1
+        for test_attr in ("training_layers_per_ipu", "inference_layers_per_ipu"):
+            with pytest.raises(ValueError, match=f"`IPUConfig` attribute `{test_attr}` must have all elements >= -1"):
+                setattr(ipu_config, test_attr, [3, 5, -2])
+            # should not raise
+            setattr(ipu_config, test_attr, [1, 2, 3])
+
+        # *matmul proportion attributes cannot contain values less than 0
+        for test_attr in ("training_matmul_proportion", "inference_matmul_proportion"):
+            with pytest.raises(ValueError, match=f"`IPUConfig` attribute `{test_attr}` must have all elements >= 0"):
+                setattr(ipu_config, test_attr, [-0.5, 0, 0.5])
+            # should not raise
+            setattr(ipu_config, test_attr, [0.5, 0.5])
+
+        # Scalar attributes like *replication_factor must be atleast 1
+        for test_attr in (
+            "training_replication_factor",
+            "inference_replication_factor",
+            "gradient_accumulation_steps",
+            "training_ipus_per_replica",
+            "inference_ipus_per_replica",
+            "embedding_serialization_factor",
+            "device_iterations",
+            "inference_device_iterations",
+        ):
+            with pytest.raises(ValueError, match=f"`IPUConfig` attribute `{test_attr}` must be >= 1"):
+                setattr(ipu_config, test_attr, 0)
+            # should not raise
+            setattr(ipu_config, test_attr, 8)
+
+        # output mode must be one of ("all", "sum", "final", "default")
+        with pytest.raises(ValueError, match=f"`IPUConfig` attribute `output_mode` can only take values in"):
+            ipu_config.output_mode = "reduce"
+        # should not raise
+        ipu_config.output_mode = "final"
+
+    def test_validate_ipu_config(self):
+        # If *matmul_proportion is a List[float], it must
+        # use the same number of IPUs as *ipus_per_replica
+        ipus_per_replica = 4
+        training_matmul_proportion = [0.2] * (ipus_per_replica + 1)
+        with pytest.raises(
+            IncompatibleIPUConfigError,
+            match=re.escape(f"training_matmul_proportion={training_matmul_proportion} should use the same number"),
+        ):
+            IPUConfig(ipus_per_replica=ipus_per_replica, training_matmul_proportion=training_matmul_proportion)
+        # Should not raise
+        training_matmul_proportion = [0.2] * ipus_per_replica
+        IPUConfig(ipus_per_replica=ipus_per_replica, training_matmul_proportion=training_matmul_proportion)
+
+        inference_matmul_proportion = [0.2] * (ipus_per_replica - 1)
+        with pytest.raises(
+            IncompatibleIPUConfigError,
+            match=re.escape(f"inference_matmul_proportion={inference_matmul_proportion} should use the same number"),
+        ):
+            IPUConfig(ipus_per_replica=ipus_per_replica, inference_matmul_proportion=inference_matmul_proportion)
+        # Should not raise
+        inference_matmul_proportion = [0.2] * ipus_per_replica
+        IPUConfig(ipus_per_replica=ipus_per_replica, inference_matmul_proportion=inference_matmul_proportion)
+
+        # If there are no wildcards in *layers_per_ipu, the pipeline length
+        # should equal *ipus_per_replica
+        training_layers_per_ipu = [2] * (ipus_per_replica + 1)
+        with pytest.raises(
+            IncompatibleIPUConfigError,
+            match=re.escape(f"training_layers_per_ipu={training_layers_per_ipu} should use the same number"),
+        ):
+            IPUConfig(ipus_per_replica=ipus_per_replica, training_layers_per_ipu=training_layers_per_ipu)
+        # Should not raise
+        training_layers_per_ipu = [2] * ipus_per_replica
+        IPUConfig(ipus_per_replica=ipus_per_replica, training_layers_per_ipu=training_layers_per_ipu)
+
+        inference_layers_per_ipu = [2] * (ipus_per_replica - 1)
+        with pytest.raises(
+            IncompatibleIPUConfigError,
+            match=re.escape(f"inference_layers_per_ipu={inference_layers_per_ipu} should use the same number"),
+        ):
+            IPUConfig(ipus_per_replica=ipus_per_replica, inference_layers_per_ipu=inference_layers_per_ipu)
+        # Should not raise
+        inference_layers_per_ipu = [2] * ipus_per_replica
+        IPUConfig(ipus_per_replica=ipus_per_replica, inference_layers_per_ipu=inference_layers_per_ipu)
+
+        # Test validation after construction
+        ipu_config = IPUConfig(ipus_per_replica=ipus_per_replica, layers_per_ipu=[-1])
+        training_layers_per_ipu = [2, 2, 2]
+        ipu_config.training_layers_per_ipu = training_layers_per_ipu
+        with pytest.raises(
+            IncompatibleIPUConfigError,
+            match=re.escape(f"training_layers_per_ipu={training_layers_per_ipu} should use the same number"),
+        ):
+            ipu_config.validate_ipu_config()
+        # Should not raise
+        ipu_config.training_layers_per_ipu = [2] * ipus_per_replica
+        ipu_config.validate_ipu_config()
