@@ -204,7 +204,7 @@ class IPUConfig(BaseConfig):
     # to be validated by that function
     attribute_validators = dict()
 
-    def contents_geq_value_validator(
+    def _contents_geq_value_validator(
         name: str, value: Union[float, int, Sequence], floor_value: Union[float, int]
     ) -> None:
         """
@@ -230,7 +230,7 @@ class IPUConfig(BaseConfig):
                 f" Union[float, int, Sequence[Union[int, float]]]. You provided: {value=},{type(value)}"
             )
 
-    attribute_validators[partial(contents_geq_value_validator, floor_value=1)] = {
+    attribute_validators[partial(_contents_geq_value_validator, floor_value=1)] = {
         "replication_factor",
         "inference_replication_factor",
         "gradient_accumulation_steps",
@@ -244,17 +244,17 @@ class IPUConfig(BaseConfig):
         "inference_device_iterations",
     }
 
-    attribute_validators[partial(contents_geq_value_validator, floor_value=0)] = {
+    attribute_validators[partial(_contents_geq_value_validator, floor_value=0)] = {
         "matmul_proportion",
         "inference_matmul_proportion",
     }
 
-    attribute_validators[partial(contents_geq_value_validator, floor_value=-1)] = {
+    attribute_validators[partial(_contents_geq_value_validator, floor_value=-1)] = {
         "layers_per_ipu",
         "inference_layers_per_ipu",
     }
 
-    def output_mode_validator(name: str, value: str):
+    def _output_mode_validator(name: str, value: str):
         allowed_values = ("all", "sum", "final", "default")
         if value not in allowed_values:
             raise ValueError(
@@ -262,9 +262,9 @@ class IPUConfig(BaseConfig):
                 f" {allowed_values}. You provided: {value=}"
             )
 
-    attribute_validators[output_mode_validator] = {"output_mode"}
+    attribute_validators[_output_mode_validator] = {"output_mode"}
 
-    def serialized_layer_splits_per_ipu_validator(name: str, value: str):
+    def _serialized_layer_splits_per_ipu_validator(name: str, value: str):
         """
         Validates serialized_{projection/embedding}_splits_per_ipu attributes.
         If `value` is not None. `value` must be of type List[int>=0] with
@@ -275,7 +275,7 @@ class IPUConfig(BaseConfig):
         if value is None:
             return
 
-        IPUConfig.contents_geq_value_validator(name, value, floor_value=0)
+        IPUConfig._contents_geq_value_validator(name, value, floor_value=0)
 
         # There must be atleast 1 split when the pipeline is provided
         if sum(value) < 1:
@@ -286,7 +286,7 @@ class IPUConfig(BaseConfig):
             if splits and value[i + 1] == 0 and sum(value[i + 1 :]) != 0:
                 raise ValueError(f"`IPUConfig` attribute `{name}={value}` must have its splits on consecutive IPUs.")
 
-    attribute_validators[serialized_layer_splits_per_ipu_validator] = {
+    attribute_validators[_serialized_layer_splits_per_ipu_validator] = {
         "serialized_projection_splits_per_ipu",
         "inference_serialized_projection_splits_per_ipu",
         "serialized_embedding_splits_per_ipu",
@@ -417,7 +417,7 @@ class IPUConfig(BaseConfig):
         # TODO: remove this if unnecessary.
         self.execute_encoder_on_cpu_for_generation = kwargs.pop("execute_encoder_on_cpu_for_generation", False)
 
-        self.validate_ipu_config()
+        self._validate_ipu_config()
 
     @property
     def mode(self) -> str:
@@ -487,15 +487,14 @@ class IPUConfig(BaseConfig):
 
         return super().__setattr__(name, value)
 
-    def validate_ipu_config(self):
+    def _validate_ipu_config(self):
         """
         Tests coherence of `IPUConfig` attributes for all modes
         in self.modes. For example if `matmul_proportion=[0.2, 0.2]`,
         `ipus_per_replica` must have value 2.
 
         Raises:
-            IncompatibleIPUConfigError: Raised if any `IPUConfig` attributes
-            are not coherent.
+            IncompatibleIPUConfigError: Raised if any `IPUConfig` attributes are not coherent.
         """
         if self.replicated_tensor_sharding and self.replication_factor == 1:
             logger.warning("Setting replicated_tensor_sharding to False when replication_factor=1")
@@ -556,6 +555,7 @@ class IPUConfig(BaseConfig):
                     )
 
         self.mode = old_mode
+        return self
 
     def _to_options(self, for_inference: bool = False, compile_only: bool = False) -> poptorch.Options:
         if not compile_only and poptorch.ipuHardwareVersion() != 2:
