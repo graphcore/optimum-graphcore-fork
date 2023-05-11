@@ -109,33 +109,43 @@ class IPUConfig(BaseConfig):
         enable_half_partials (`bool`, *optional*, defaults to `True`):
             Whether the data type of partial results for matrix multiplication and convolution operators should be
             float16 or not.
-        embedding_serialization_factor (`int`, *optional*, defaults to 1):
-            The factor to use to serialze embeddings. Nothing happens if `embedding_serialization_factor = 1`, and for
-            `embedding_serialization_factor > 1`, the `torch.nn.Embedding` layer is replaced by a
-            `optimum.graphcore.modeling_utils.SerializedEmbedding` layer.
-        linear_serialization_factor (`int`, *optional*, defaults to 1):
-            The factor to use to either serialize the matmuls that are performed in a linear layer, or,
-            serialize a linear layer into a set of individual linear layers that can be optionally placed on different IPUs.
-            Nothing happens if `linear_serialization_factor = 1`. If `linear_serialization_factor > 1`,
-            the `torch.nn.Linear` layer is replaced by a `optimum.graphcore.modeling_utils.SpltLinear` layer
-            if `serialized_linear_splits_per_ipu` is provided and the linear layer's weights are not tied to another layer.
+        projection_serialization_factor (`int`, *optional*, defaults to 1 if `serialized_projection_splits_per_ipu` is `None`):
+            The factor to use to either serialize the matmuls that are performed in the linear projection layer, or,
+            serialize the projection layer into a set of individual linear layers that can be optionally placed on different IPUs.
+            Nothing happens if `projection_serialization_factor = 1`. If `projection_serialization_factor > 1`,
+            the `torch.nn.Linear` layer is replaced by a `optimum.graphcore.modeling_utils.SplitProjection` layer
+            if `serialized_projection_splits_per_ipu` is provided and the linear layer's weights are not tied to another layer.
             Otherwise it is replaced by a `optimum.graphcore.modeling_utils.SerializedLinear` layer.
-        serialized_linear_splits_per_ipu (`List[int]`, *optional*, defaults to None):
-            Specifies the number of `linear_serialization_factor` splits of a linear layer that will be put
+            Note: only one of `projection_serialization_factor` or `serialized_projection_splits_per_ipu` should be set.
+        inference_projection_serialization_factor (`int`, *optional*, defaults to 1 if `inference_serialized_projection_splits_per_ipu` is `None`):
+            Same as `projection_serialization_factor` but for inference only.
+        serialized_projection_splits_per_ipu (`List[int]`, *optional*, defaults to None):
+            Specifies the number of `projection_serialization_factor` splits of a linear layer that will be put
             on each IPU for pipelined execution. The format has to be the same as that for `layers_per_ipu`
             however wildcards are not supported. For instance: `[0, 0, 2, 3]` specifies how to place a linear
-            layer with `linear_serialization_factor=5` onto a 4-IPU pipeline. The first two IPUs have no sub-linear
+            layer with `projection_serialization_factor=5` onto a 4-IPU pipeline. The first two IPUs have no sub-linear
             layers placed onto them,  IPU2 has 2 splits and IPU3 has 3 splits. If an argument to this parameter is provided,
             it must:
             - be of the form `List[int>=0]` with atleast 1 split.
-            - have the same serialization count as `linear_serialization_factor`
             - have the same pipeline length as `ipus_per_replica`
-            - have no zeros between splits e.g. `[3, 0, 2, 0]` is invalid
+            - have splits that are consecutive with no zeros between splits e.g. `[3, 0, 2, 0]` is invalid
             - for generation, splits must lie entirely on the encoder or decoder portion of the pipeline.
             For example the 4-IPU pipeline `[0, 0, 1, 2]` for an encoder-decoder model can be split into
             `[0, 0]` and `[1, 2]`, however `[0, 1, 2, 0]` split into `[0, 1]` and `[2, 0]` is invalid.
+            Note: only one of `projection_serialization_factor` or `serialized_projection_splits_per_ipu` should be set.
+        inference_serialized_projection_splits_per_ipu (`List[int]`, *optional*, defaults to None):
+            Same as `serialized_projection_splits_per_ipu` but for inference only.
+        embedding_serialization_factor (`int`, *optional*, defaults to 1 if `serialized_embedding_splits_per_ipu` is `None`):
+            The factor to use to serialze embeddings. Nothing happens if `embedding_serialization_factor = 1`, and for
+            `embedding_serialization_factor > 1`, the `torch.nn.Embedding` layer is replaced by a
+            `optimum.graphcore.modeling_utils.SerializedEmbedding` layer.
+            Note: only one of `embedding_serialization_factor` or `serialized_embedding_splits_per_ipu` should be provided.
+        inference_embedding_serialization_factor (`int`, *optional*, defaults to 1 if `inference_serialized_embedding_splits_per_ipu` is `None`):
+            Same as `embedding_serialization_factor` but for inference only.
         serialized_embedding_splits_per_ipu (`List[int]`, *optional*, defaults to None):
-            Analogous to `serialized_linear_splits_per_ipu` but for serialized embeddings.
+            Analogous to `serialized_projection_splits_per_ipu` but for serialized embeddings.
+        inference_serialized_embedding_splits_per_ipu (`List[int]`, *optional*, defaults to None):
+            Same as `serialized_embedding_splits_per_ipu` but for inference only.
         recompute_checkpoint_every_layer (`bool`, *optional*, defaults to `False`):
             Whether to use gradient checkpointing at the end of every layer. It can help in reducing the memory impact.
 
@@ -185,11 +195,11 @@ class IPUConfig(BaseConfig):
     _layers_per_ipu = ManagedAttribute("layers_per_ipu")
     _ipus_per_replica = ManagedAttribute("ipus_per_replica")
     _matmul_proportion = ManagedAttribute("matmul_proportion")
+    _projection_serialization_factor = ManagedAttribute("projection_serialization_factor")
+    _serialized_projection_splits_per_ipu = ManagedAttribute("serialized_projection_splits_per_ipu")
     _embedding_serialization_factor = ManagedAttribute("embedding_serialization_factor")
-    _projection_serialization_factor = ManagedAttribute("linear_serialization_factor")
     _serialized_embedding_splits_per_ipu = ManagedAttribute("serialized_embedding_splits_per_ipu")
-    _serialized_projection_splits_per_ipu = ManagedAttribute("serialized_linear_splits_per_ipu")
-    
+
     # Create a mapping of attribute value validating functions to a set of attributes
     # to be validated by that function
     attribute_validators = dict()
@@ -226,12 +236,12 @@ class IPUConfig(BaseConfig):
         "gradient_accumulation_steps",
         "ipus_per_replica",
         "inference_ipus_per_replica",
-        "embedding_serialization_factor",
-        "inference_embedding_serialization_factor"
         "projection_serialization_factor",
-        "inference_projection_serialization_factor"
+        "inference_projection_serialization_factor",
+        "embedding_serialization_factor",
+        "inference_embedding_serialization_factor",
         "device_iterations",
-        "inference_device_iterations"
+        "inference_device_iterations",
     }
 
     attribute_validators[partial(contents_geq_value_validator, floor_value=0)] = {
@@ -253,36 +263,34 @@ class IPUConfig(BaseConfig):
             )
 
     attribute_validators[output_mode_validator] = {"output_mode"}
-    
+
     def serialized_layer_splits_per_ipu_validator(name: str, value: str):
         """
         Validates serialized_{projection/embedding}_splits_per_ipu attributes.
-        If `value` is not None. `value` must be of type List[int>=0] with 
-        atleast 1 split on 1 IPU. Further splits in the pipeline must be 
+        If `value` is not None. `value` must be of type List[int>=0] with
+        atleast 1 split on 1 IPU. Further splits in the pipeline must be
         consecutive.
         """
-        
+
         if value is None:
             return
-        
-        IPUConfig.contents_geq_value_validator(name, value, floor_value=0)        
-        
+
+        IPUConfig.contents_geq_value_validator(name, value, floor_value=0)
+
         # There must be atleast 1 split when the pipeline is provided
         if sum(value) < 1:
-            raise ValueError(f"`{name}` must have atleast 1 split on 1 IPU.")
-        
+            raise ValueError(f"`IPUConfig` attribute `{name}={value}` must have atleast 1 split on 1 IPU.")
+
         # Check that splits are on consecutive IPUs (e.g. [3,0,2,0] is not allowed)
         for i, splits in enumerate(value[:-1]):
-            if (splits and value[i + 1] == 0 and sum(value[i + 1:]) == 0):
-                raise ValueError(
-                    f"{name}={value} must have its splits on consecutive IPUs"
-                )   
-        
+            if splits and value[i + 1] == 0 and sum(value[i + 1 :]) != 0:
+                raise ValueError(f"`IPUConfig` attribute `{name}={value}` must have its splits on consecutive IPUs.")
+
     attribute_validators[serialized_layer_splits_per_ipu_validator] = {
         "serialized_projection_splits_per_ipu",
         "inference_serialized_projection_splits_per_ipu",
         "serialized_embedding_splits_per_ipu",
-        "inference_serialized_embedding_splits_per_ipu"
+        "inference_serialized_embedding_splits_per_ipu",
     }
 
     def __init__(
@@ -299,14 +307,14 @@ class IPUConfig(BaseConfig):
         matmul_proportion: Union[float, List[float]] = 0.2,
         inference_matmul_proportion: Optional[Union[float, List[float]]] = None,
         enable_half_partials: bool = True,
-        embedding_serialization_factor: Optional[int] = 1,
+        projection_serialization_factor: Optional[int] = None,
+        inference_projection_serialization_factor: Optional[int] = None,
+        serialized_projection_splits_per_ipu: Optional[List[int]] = None,
+        inference_serialized_projection_splits_per_ipu: Optional[List[int]] = None,
+        embedding_serialization_factor: Optional[int] = None,
         inference_embedding_serialization_factor: Optional[int] = None,
         serialized_embedding_splits_per_ipu: Optional[List[int]] = None,
         inference_serialized_embedding_splits_per_ipu: Optional[List[int]] = None,
-        projection_serialization_factor: Optional[int] = 1,
-        inference_projection_serialization_factor: Optional[int] = 1,
-        serialized_projection_splits_per_ipu: Optional[List[int]] = None,
-        inference_serialized_projection_splits_per_ipu: Optional[List[int]] = None,
         recompute_checkpoint_every_layer: bool = False,
         device_iterations: int = 1,
         inference_device_iterations: int = 1,
@@ -374,17 +382,17 @@ class IPUConfig(BaseConfig):
 
         check_and_set_replication_factor("replication_factor", replication_factor)
         check_and_set_replication_factor("inference_replication_factor", inference_replication_factor)
-        
+
         # Non-transformer layers initialisation
+        self.projection_serialization_factor = projection_serialization_factor
+        self.inference_projection_serialization_factor = inference_projection_serialization_factor
+        self.serialized_projection_splits_per_ipu = serialized_projection_splits_per_ipu
+        self.inference_serialized_projection_splits_per_ipu = inference_serialized_projection_splits_per_ipu
+
         self.embedding_serialization_factor = embedding_serialization_factor
         self.inference_embedding_serialization_factor = inference_embedding_serialization_factor
         self.serialized_embedding_splits_per_ipu = serialized_embedding_splits_per_ipu
         self.inference_serialized_embedding_splits_per_ipu = inference_serialized_embedding_splits_per_ipu
-        
-        self.projection_serialization_factor = projection_serialization_factor
-        self.inference_projection_serialization_factor = inference_projection_serialization_factor
-        self.serialized_projection_splits_per_ipu = serialized_projection_splits_per_ipu
-        self.inference_serialized_projection_splits_per_ipu = inference_serialized_projection_splits_per_ipu 
 
         if "sharded_execution_for_inference" in kwargs:
             warnings.warn(
@@ -393,7 +401,7 @@ class IPUConfig(BaseConfig):
 
         if "enable_half_first_order_momentum" in kwargs:
             warnings.warn('The "enable_half_first_order_momentum" parameter is deprecated')
-            
+
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.device_iterations = device_iterations
         self.inference_device_iterations = inference_device_iterations
@@ -405,7 +413,7 @@ class IPUConfig(BaseConfig):
         self.embedding_serialization_factor = embedding_serialization_factor
         self.recompute_checkpoint_every_layer = recompute_checkpoint_every_layer
         self.output_mode = output_mode
-        
+
         # TODO: remove this if unnecessary.
         self.execute_encoder_on_cpu_for_generation = kwargs.pop("execute_encoder_on_cpu_for_generation", False)
 
@@ -516,19 +524,19 @@ class IPUConfig(BaseConfig):
                     f"{layers_per_ipu_mode_str}={self._layers_per_ipu} should use the"
                     f" same number of IPUs as {ipus_per_replica_mode_str}={self._ipus_per_replica}"
                 )
-                
+
             # Validate non-transformer layer placement configuration
             for layer in ("embedding", "projection"):
                 mode_layer_splits_per_ipu_str = self._get_managed_attr_mode_name(f"serialized_{layer}_splits_per_ipu")
                 mode_layer_splits_per_ipu = getattr(self, mode_layer_splits_per_ipu_str)
                 mode_layer_serialisation_factor_str = self._get_managed_attr_mode_name(f"{layer}_serialization_factor")
                 mode_layer_serialization_factor = getattr(self, mode_layer_serialisation_factor_str)
-                
-                # If the user has not provided either the layer_serialization_factor or 
+
+                # If the user has not provided either the layer_serialization_factor or
                 # layer_splits_per_ipu, default the layer_serialization_factor to 1
                 if not (mode_layer_splits_per_ipu or mode_layer_serialization_factor):
                     setattr(self, mode_layer_serialisation_factor_str, 1)
-                    
+
                 # If the user provides both options, tell them only one is allowed and what each option is for
                 if mode_layer_splits_per_ipu and mode_layer_serialization_factor:
                     raise ValueError(
@@ -538,7 +546,7 @@ class IPUConfig(BaseConfig):
                         f" `{mode_layer_splits_per_ipu_str}` should be used when you want your {layer} layer to be split"
                         " across multiple IPUs of your choice (or to choose which single IPU the layer is serialised on)."
                     )
-                    
+
                 # Serialized layer splits per ipu pipeline must have the same pipeline length
                 # as the number of ipus per replica
                 if mode_layer_splits_per_ipu and len(mode_layer_splits_per_ipu) != self._ipus_per_replica:
@@ -546,7 +554,7 @@ class IPUConfig(BaseConfig):
                         f"{mode_layer_splits_per_ipu_str}={mode_layer_splits_per_ipu}"
                         f" should use the same number of IPUs as {ipus_per_replica_mode_str}={self._ipus_per_replica}"
                     )
-                
+
         self.mode = old_mode
 
     def _to_options(self, for_inference: bool = False, compile_only: bool = False) -> poptorch.Options:

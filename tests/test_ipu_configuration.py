@@ -206,62 +206,79 @@ class IPUConfigTester(unittest.TestCase):
         self.assertEqual(layer_ipu, [0, 1, 1, 2, 2, 3, 3])
 
     def test_execution_mode_specific_options(self):
-        expected_values = {
+        base_expected_values = {
             "layers_per_ipu": [0, 1, 2, 2, 2, 2, 1, 0],
-            "matmul_proportion": [0.1, 0.2, 0.3, 0.4, 0.3, 0.2, 0.1, 0.1],
-            "ipus_per_replica": 8,
-            "embedding_serialization_factor": 4,
-            "linear_serialization_factor": 4,
-            "serialized_embedding_splits_per_ipu": [2, 2, 0, 0, 0, 0, 0, 0],
-            "serialized_linear_splits_per_ipu": [0, 0, 0, 0, 0, 0, 2, 2],
             "inference_layers_per_ipu": [0, 3, 7, 0],
+            "matmul_proportion": [0.1, 0.2, 0.3, 0.4, 0.3, 0.2, 0.1, 0.1],
             "inference_matmul_proportion": [0.2, 0.3, 0.7, 0.2],
+            "ipus_per_replica": 8,
             "inference_ipus_per_replica": 4,
-            "inference_embedding_serialization_factor": 2,
-            "inference_linear_serialization_factor": 3,
-            "inference_serialized_embedding_splits_per_ipu": [1, 1, 0, 0],
-            "inference_serialized_linear_splits_per_ipu": [0, 0, 1, 2],
         }
-        ipu_config = IPUConfig(**expected_values)
 
-        # Default mode is training
-        self.assertEqual(ipu_config.mode, "training")
+        # serialized_layer_splits_per_ipu and serialization_factor options are
+        # mutually exclusive
+        serialized_splits_per_ipu_expected_values = {
+            "serialized_projection_splits_per_ipu": [0, 0, 0, 0, 0, 0, 2, 2],
+            "inference_serialized_projection_splits_per_ipu": [0, 0, 1, 2],
+            "serialized_embedding_splits_per_ipu": [2, 2, 0, 0, 0, 0, 0, 0],
+            "inference_serialized_embedding_splits_per_ipu": [1, 1, 0, 0],
+        }
 
-        # Training versions retreived
-        for option, value in expected_values.items():
-            if "inference" not in option:
-                self.assertEqual(getattr(ipu_config, f"_{option}"), value)
+        serialization_factor_expected_values = {
+            "projection_serialization_factor": 4,
+            "inference_projection_serialization_factor": 3,
+            "embedding_serialization_factor": 4,
+            "inference_embedding_serialization_factor": 2,
+        }
 
-        # Inference options created when mode is training
-        opts = ipu_config.train().to_options(for_inference=True)
-        self.assertEqual(
-            opts._values["available_memory_proportion"],
-            {
-                ipu_id: matmul_proportion
-                for ipu_id, matmul_proportion in zip(
-                    range(expected_values["inference_ipus_per_replica"]),
-                    expected_values["inference_matmul_proportion"],
-                )
-            },
-        )
-        self.assertEqual(ipu_config.mode, "training")
+        for extended_expected_values in (
+            serialized_splits_per_ipu_expected_values,
+            serialization_factor_expected_values,
+        ):
+            expected_values = {**base_expected_values, **extended_expected_values}
+            ipu_config = IPUConfig(**expected_values)
 
-        # Inference versions retreived
-        ipu_config.eval()
-        for option, value in expected_values.items():
-            if "inference" in option:
-                self.assertEqual(getattr(ipu_config, f"_{option[len('inference_'):]}"), value)
+            # Default mode is training
+            self.assertEqual(ipu_config.mode, "training")
 
-        # Test encoder decoder model IPUConfig splitting for generation
-        e_ipu_config, d_ipu_config = split_encoder_decoder_ipu_config(ipu_config, 3, 7)
-        self.assertEqual(e_ipu_config._layers_per_ipu, [0, 3])
-        self.assertEqual(e_ipu_config._ipus_per_replica, 2)
-        self.assertEqual(e_ipu_config._serialized_embedding_splits_per_ipu, [1, 1])
-        self.assertEqual(e_ipu_config._serialized_linear_splits_per_ipu, None)
-        self.assertEqual(d_ipu_config._layers_per_ipu, [7, 0])
-        self.assertEqual(d_ipu_config._ipus_per_replica, 2)
-        self.assertEqual(d_ipu_config._serialized_embedding_splits_per_ipu, None)
-        self.assertEqual(d_ipu_config._serialized_linear_splits_per_ipu, [1, 2])
+            # Training versions retreived
+            for option, value in expected_values.items():
+                if "inference" not in option:
+                    self.assertEqual(getattr(ipu_config, f"_{option}"), value)
+
+            # Inference options created when mode is training
+            opts = ipu_config.train().to_options(for_inference=True)
+            self.assertEqual(
+                opts._values["available_memory_proportion"],
+                {
+                    ipu_id: matmul_proportion
+                    for ipu_id, matmul_proportion in zip(
+                        range(expected_values["inference_ipus_per_replica"]),
+                        expected_values["inference_matmul_proportion"],
+                    )
+                },
+            )
+
+            self.assertEqual(ipu_config.mode, "training")
+
+            # Inference versions retreived
+            ipu_config.eval()
+            for option, value in expected_values.items():
+                if "inference" in option:
+                    self.assertEqual(getattr(ipu_config, f"_{option[len('inference_'):]}"), value)
+
+            # Test encoder decoder model IPUConfig splitting for generation
+            e_ipu_config, d_ipu_config = split_encoder_decoder_ipu_config(ipu_config, 3, 7)
+            self.assertEqual(e_ipu_config._layers_per_ipu, [0, 3])
+            self.assertEqual(e_ipu_config._ipus_per_replica, 2)
+            self.assertEqual(d_ipu_config._layers_per_ipu, [7, 0])
+            self.assertEqual(d_ipu_config._ipus_per_replica, 2)
+
+            if "serialized_projection_splits_per_ipu" in expected_values:
+                self.assertEqual(e_ipu_config._serialized_embedding_splits_per_ipu, [1, 1])
+                self.assertEqual(e_ipu_config._serialized_projection_splits_per_ipu, None)
+                self.assertEqual(d_ipu_config._serialized_embedding_splits_per_ipu, None)
+                self.assertEqual(d_ipu_config._serialized_projection_splits_per_ipu, [1, 2])
 
         # ipus_per_replica not specified
         ipu_config = IPUConfig(layers_per_ipu=[1, 2, 3, 4])
@@ -280,65 +297,6 @@ class IPUConfigTester(unittest.TestCase):
             inference_layers_per_ipu=[3, 7],
         )
         self.assertEqual(ipu_config.inference_matmul_proportion, 0.2)
-
-        # tests for serialized_{linear/embedding}_splits_per_ipu
-        # both linear and embedding layers are tested in the same way
-
-        # Cannot contain negative values
-        with pytest.raises(
-            ValueError, match="training_serialized_linear_splits_per_ipu=\\[0, 0, -1, 1\\] should be of type"
-        ):
-            ipu_config = IPUConfig(
-                ipus_per_replica=4,
-                serialized_linear_splits_per_ipu=[0, 0, -1, 1],
-            )
-
-        # Must have atleast 1 split on 1 IPU
-        with pytest.raises(
-            ValueError, match="training_serialized_linear_splits_per_ipu=\\[0, 0, 0, 0\\] should be of type.*"
-        ):
-            ipu_config = IPUConfig(
-                ipus_per_replica=4,
-                serialized_linear_splits_per_ipu=[0, 0, 0, 0],
-            )
-
-        # Must have pipeline length == ipus_per_replica
-        # using more IPUs
-        with pytest.raises(
-            ValueError, match="serialized_linear_splits_per_ipu=\\[0, 0, 1, 1\\] cannot use more/less IPUs"
-        ):
-            ipu_config = IPUConfig(
-                serialized_linear_splits_per_ipu=[0, 0, 1, 1],
-            )
-
-        # using less IPUs
-        with pytest.raises(
-            ValueError, match="serialized_linear_splits_per_ipu=\\[0, 0, 1, 1\\] cannot use more/less IPUs"
-        ):
-            ipu_config = IPUConfig(
-                ipus_per_replica=8,
-                serialized_linear_splits_per_ipu=[0, 0, 1, 1],
-            )
-
-        # The number of splits in the pipeline must equal the corresponding serialization factor
-        # the default values are 1, so the user has to provide them
-        with pytest.raises(
-            ValueError, match="The number of splits in serialized_linear_splits_per_ipu=\\[3, 2\\]"
-        ):
-            ipu_config = IPUConfig(
-                ipus_per_replica=2,
-                serialized_linear_splits_per_ipu=[3, 2],
-            )
-
-        # Cannot have zeros between positive splits e.g. [0, 3, 0, 2]
-        with pytest.raises(
-            ValueError, match="serialized_linear_splits_per_ipu=\\[0, 3, 0, 2\\] cannot contain zeros"
-        ):
-            ipu_config = IPUConfig(
-                ipus_per_replica=4,
-                linear_serialization_factor=5,
-                serialized_linear_splits_per_ipu=[0, 3, 0, 2],
-            )
 
     def test_split_encoder_decoder_ipu_config(self):
         # Test splitting two IPUs
@@ -359,13 +317,13 @@ class IPUConfigTester(unittest.TestCase):
         # and `SerializedEmbedding` placed on different IPUs, cannot
         # have serialized_{linear/embedding}_splits_per_ipu present in
         # both the encoder and decoder
-        with pytest.raises(ValueError, match="Attempting to split serialized_linear_splits_per_ipu="):
-            failing_ipu_config = IPUConfig(
-                layers_per_ipu=[0, 2, 2, 0],
-                linear_serialization_factor=4,
-                serialized_linear_splits_per_ipu=[0, 2, 2, 0],
-            )
-            e_ipu_config, d_ipu_config = split_encoder_decoder_ipu_config(failing_ipu_config, 2, 2)
+        for test_attr in ("projection", "embedding"):
+            with pytest.raises(ValueError, match=f"must have all splits placed on the"):
+                failing_ipu_config = IPUConfig(
+                    layers_per_ipu=[0, 2, 2, 0],
+                    **{f"serialized_{test_attr}_splits_per_ipu": [0, 2, 2, 0]},
+                )
+                e_ipu_config, d_ipu_config = split_encoder_decoder_ipu_config(failing_ipu_config, 2, 2)
 
         # Test that all the other values from the original ipu_config are intact
         ipu_config = ipu_config.to_dict()
@@ -436,40 +394,86 @@ class IPUConfigTester(unittest.TestCase):
 
         # *layers_per_ipu attributes (List[int>=-1]) cannot contain
         # values less than -1
-        for test_attr in ("layers_per_ipu", "inference_layers_per_ipu"):
+        for mode in ipu_config.modes:
+            ipu_config.mode = mode
+            test_attr = ipu_config._get_managed_attr_mode_name("layers_per_ipu")
             with pytest.raises(ValueError, match=f"`IPUConfig` attribute `{test_attr}` must have all elements >= -1"):
                 setattr(ipu_config, test_attr, [3, 5, -2])
             # should not raise
             setattr(ipu_config, test_attr, [1, 2, 3])
 
         # *matmul proportion attributes cannot contain values less than 0
-        for test_attr in ("matmul_proportion", "inference_matmul_proportion"):
+        for mode in ipu_config.modes:
+            ipu_config.mode = mode
+            test_attr = ipu_config._get_managed_attr_mode_name("matmul_proportion")
             with pytest.raises(ValueError, match=f"`IPUConfig` attribute `{test_attr}` must have all elements >= 0"):
                 setattr(ipu_config, test_attr, [-0.5, 0, 0.5])
             # should not raise
             setattr(ipu_config, test_attr, [0.5, 0.5])
 
         # Scalar attributes like *replication_factor must be atleast 1
-        for test_attr in (
-            "replication_factor",
-            "inference_replication_factor",
-            "gradient_accumulation_steps",
-            "ipus_per_replica",
-            "inference_ipus_per_replica",
-            "embedding_serialization_factor",
-            "device_iterations",
-            "inference_device_iterations",
-        ):
-            with pytest.raises(ValueError, match=f"`IPUConfig` attribute `{test_attr}` must be >= 1"):
-                setattr(ipu_config, test_attr, 0)
-            # should not raise
-            setattr(ipu_config, test_attr, 8)
+        for mode in ipu_config.modes:
+            ipu_config.mode = mode
+            for attribute in (
+                "replication_factor",
+                "gradient_accumulation_steps",
+                "ipus_per_replica",
+                "projection_serialization_factor",
+                "embedding_serialization_factor",
+                "device_iterations",
+            ):
+                test_attr = ipu_config._get_managed_attr_mode_name(attribute)
+                with pytest.raises(ValueError, match=f"`IPUConfig` attribute `{test_attr}` must be >= 1"):
+                    setattr(ipu_config, test_attr, 0)
+                # should not raise
+                setattr(ipu_config, test_attr, 8)
 
         # output mode must be one of ("all", "sum", "final", "default")
         with pytest.raises(ValueError, match=f"`IPUConfig` attribute `output_mode` can only take values in"):
             ipu_config.output_mode = "reduce"
         # should not raise
         ipu_config.output_mode = "final"
+
+        # Validation of serialized_{projection/embedding}_splits_per_ipu
+        # attributes
+
+        # Must be of type List[int>=0]
+        for mode in ipu_config.modes:
+            ipu_config.mode = mode
+            for attribute in ("projection", "embedding"):
+                test_attr = ipu_config._get_managed_attr_mode_name(f"serialized_{attribute}_splits_per_ipu")
+                with pytest.raises(
+                    ValueError, match=f"`IPUConfig` attribute `{test_attr}` must have all elements >= 0"
+                ):
+                    setattr(ipu_config, test_attr, [0, 0, -1, 1])
+                # Should not raise
+                setattr(ipu_config, test_attr, [0, 0, 1, 1])
+
+        # Must have atleast 1 split if the pipeline is provided
+        for mode in ipu_config.modes:
+            ipu_config.mode = mode
+            for attribute in ("projection", "embedding"):
+                test_attr = ipu_config._get_managed_attr_mode_name(f"serialized_{attribute}_splits_per_ipu")
+                with pytest.raises(
+                    ValueError,
+                    match=re.escape(f"`IPUConfig` attribute `{test_attr}=[0, 0]` must have atleast 1 split"),
+                ):
+                    setattr(ipu_config, test_attr, [0, 0])
+                # Should not raise
+                setattr(ipu_config, test_attr, [1, 0])
+
+        # Splits should be on consecutive IPUs
+        for mode in ipu_config.modes:
+            ipu_config.mode = mode
+            for attribute in ("projection", "embedding"):
+                test_attr = ipu_config._get_managed_attr_mode_name(f"serialized_{attribute}_splits_per_ipu")
+                with pytest.raises(
+                    ValueError,
+                    match=re.escape(f"`IPUConfig` attribute `{test_attr}=[0, 3, 0, 2]` must have its splits on"),
+                ):
+                    setattr(ipu_config, test_attr, [0, 3, 0, 2])
+                # Should not raise
+                setattr(ipu_config, test_attr, [0, 3, 2, 0])
 
     def test_validate_ipu_config(self):
         # If *matmul_proportion is a List[float], it must
@@ -516,6 +520,41 @@ class IPUConfigTester(unittest.TestCase):
         # Should not raise
         inference_layers_per_ipu = [2] * ipus_per_replica
         IPUConfig(ipus_per_replica=ipus_per_replica, inference_layers_per_ipu=inference_layers_per_ipu)
+
+        # Validation of non-transformer layer placement configuration
+
+        # If the user has not provided either {projection/embedding}_serialization_factor
+        # or serialized_{projection/embedding}_splits_per_ipu, {projection/embedding}_serialization_factor}
+        # should default to 1
+        ipu_config = IPUConfig()
+        self.assertEqual(ipu_config.projection_serialization_factor, 1)
+        self.assertEqual(ipu_config.inference_projection_serialization_factor, 1)
+        self.assertEqual(ipu_config.embedding_serialization_factor, 1)
+        self.assertEqual(ipu_config.inference_embedding_serialization_factor, 1)
+
+        # The user cannot provide both {projection/embedding}_serialization_factor and
+        # serialized_{projection/embedding}_splits_per_ipu
+        for test_pair in (
+            ("projection_serialization_factor", "serialized_projection_splits_per_ipu"),
+            ("inference_projection_serialization_factor", "inference_serialized_projection_splits_per_ipu"),
+            ("embedding_serialization_factor", "serialized_embedding_splits_per_ipu"),
+            ("inference_embedding_serialization_factor", "inference_serialized_embedding_splits_per_ipu"),
+        ):
+            with pytest.raises(ValueError, match=f"Only one of `{test_pair[0]}` and `{test_pair[1]}`"):
+                IPUConfig(**{test_pair[0]: 1, test_pair[1]: [1, 1]})
+
+        # The pipeline length of serialized_{projection/embedding}_splits_per_ipu must equal
+        # the number of IPUs specified by IPUs per replica
+        for test_attr in (
+            "serialized_projection_splits_per_ipu",
+            "inference_serialized_projection_splits_per_ipu",
+            "serialized_embedding_splits_per_ipu",
+            "inference_serialized_embedding_splits_per_ipu",
+        ):
+            with pytest.raises(
+                ValueError, match=re.escape(f"{test_attr}=[0, 0, 1, 1] should use the same number of IPUs as")
+            ):
+                IPUConfig(ipus_per_replica=8, **{test_attr: [0, 0, 1, 1]})
 
         # Test validation after construction
         ipu_config = IPUConfig(ipus_per_replica=ipus_per_replica, layers_per_ipu=[-1])
