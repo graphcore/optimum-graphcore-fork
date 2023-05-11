@@ -240,19 +240,24 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
         # tied weights. Using `SerializedLinear` is exempt since
         # the weights are not sharded
         if self.config.tie_word_embeddings and (
-            embedding_serialization_factor > 1
-            or serialized_projection_splits_per_ipu is not None
+            embedding_serialization_factor > 1 or serialized_projection_splits_per_ipu is not None
         ):
-            serialized_projection_splits_per_ipu_mode_str = self.ipu_config._get_managed_attr_mode_name("serialized_projection_splits_per_ipu")
-            serialized_embedding_splits_per_ipu_mode_str = self.ipu_config._get_managed_attr_mode_name("serialized_embedding_splits_per_ipu")
-            embedding_serialization_factor_mode_str = self.ipu_config._get_managed_attr_mode_name("embedding_serialization_factor")
+            serialized_projection_splits_per_ipu_mode_str = self.ipu_config._get_managed_attr_mode_name(
+                "serialized_projection_splits_per_ipu"
+            )
+            serialized_embedding_splits_per_ipu_mode_str = self.ipu_config._get_managed_attr_mode_name(
+                "serialized_embedding_splits_per_ipu"
+            )
+            embedding_serialization_factor_mode_str = self.ipu_config._get_managed_attr_mode_name(
+                "embedding_serialization_factor"
+            )
             raise ValueError(
                 "Cannot shard input and output embedding layers when using tied weights."
                 f" {serialized_projection_splits_per_ipu_mode_str}={serialized_projection_splits_per_ipu}"
                 f" {serialized_embedding_splits_per_ipu_mode_str}={serialized_embedding_splits_per_ipu}"
                 " should not be provided when using tied input and output embeddings as it is"
                 " redundant to split layers that can only reside on 1 IPU."
-                f" {embedding_serialization_factor_mode_str}={embedding_serialization_factor}" 
+                f" {embedding_serialization_factor_mode_str}={embedding_serialization_factor}"
                 " should also be set to 1 as creating a `SerializedEmbedding` will split the"
                 " embedding table into sub embedding tables."
             )
@@ -261,8 +266,8 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
         logger.info("Embedding  --> IPU 0")
 
         if embedding_serialization_factor > 1:
-            self.shared = SerializedEmbedding(self. shared, embedding_serialization_factor)
-        
+            self.shared = SerializedEmbedding(self.shared, embedding_serialization_factor)
+
         if projection_serialization_factor > 1:
             if serialized_projection_splits_per_ipu is None:
                 serialized_lm_head = SerializedLinear(
@@ -270,7 +275,7 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
                     self.shared.num_embeddings,
                     projection_serialization_factor,
                     bias=False,
-                    mode=poptorch.MatMulSerializationMode.OutputChannels
+                    mode=poptorch.MatMulSerializationMode.OutputChannels,
                 )
                 serialized_lm_head.load_state_dict(self.lm_head.state_dict())
                 self.lm_head = serialized_lm_head
@@ -278,13 +283,10 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
                 if self.config.tie_word_embeddings:
                     self.tie_weights()
             else:
-                self.lm_head = SplitProjection(
-                    self.lm_head,
-                    serialization_factor=projection_serialization_factor
-                )
-        
+                self.lm_head = SplitProjection(self.lm_head, serialization_factor=projection_serialization_factor)
+
         self.encoder_and_decoder_embeddings_computation(True)
-        
+
         # Parallelize the embedding layer
         if embedding_serialization_factor > 1 and serialized_embedding_splits_per_ipu is not None:
             # Sharing encoder and decoder computation wraps the
@@ -298,7 +300,7 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
         # Use a custom MT5Stack implementation because sharing the position bias causes OOM error
         self.encoder.__class__ = CustomMT5Stack
         self.decoder.__class__ = CustomMT5Stack
-        
+
         # Upcast input embeddings so that the residuals remain in FP32. This
         # cast is reversed where necessary by the MT5LayerNorm layers in:
         # - first layer of MT5LayerSelfAttention
@@ -394,7 +396,7 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
                 self.lm_head = poptorch.BeginBlock(self.lm_head, "LM Head Output", ipu_id=ipu_id)
 
         self.change_lm_head_to_indexed_input_linear(restore=not for_generation)
-        
+
         logger.info("-----------------------------------------------------------")
         return self
 
@@ -444,10 +446,10 @@ class PipelinedMT5ForConditionalGeneration(MT5ForConditionalGeneration, Pipeline
                 self.tie_weights()
         elif self.lm_head.__class__ == SplitProjection:
             self.lm_head = self.lm_head.deserialize()
-        
+
         if self.shared.__class__ == SerializedEmbedding:
             self.shared = self.shared.deserialize()
-            
+
         return self
 
     # Copied from optimum.graphcore.models.t5.modeling_t5.PipelinedT5ForConditionalGenerationCustomT5Stack.forward
