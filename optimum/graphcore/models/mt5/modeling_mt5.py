@@ -24,8 +24,7 @@ from optimum.utils import logging
 from transformers import MT5ForConditionalGeneration
 from transformers.activations import NewGELUActivation
 from transformers.modeling_outputs import BaseModelOutput, Seq2SeqLMOutput
-from transformers.models.mt5.modeling_mt5 import __HEAD_MASK_WARNING_MSG, MT5Block, MT5Stack
-
+from transformers.models.t5.modeling_t5 import T5Block, T5Stack
 from ...generation import IPUGenerationMixin
 from ...modeling_utils import (
     PipelineMixin,
@@ -67,7 +66,7 @@ class CustomGELU(NewGELUActivation):
 
 
 # Copied from optimum.graphcore.models.t5.modeling_t5.CustomT5Block with t5->mt5 and T5->MT5
-class CustomMT5Block(MT5Block):
+class CustomMT5Block(T5Block):
     def forward(
         self,
         hidden_states,
@@ -173,7 +172,7 @@ class CustomMT5Block(MT5Block):
 
 
 # Copied from optimum.graphcore.models.t5.modeling_t5.CustomT5Stack with t5->mt5 and T5->MT5
-class CustomMT5Stack(MT5Stack):
+class CustomMT5Stack(T5Stack):
     def invert_attention_mask(self, *args, **kwargs) -> Tensor:
         return super().invert_attention_mask(*args, **kwargs) * 0.75
 
