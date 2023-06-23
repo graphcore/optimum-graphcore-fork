@@ -801,12 +801,16 @@ class IPUTrainer:
                 bias_parameters = {n for n, _ in self.model.named_parameters() if "bias" in n}
                 optimizer_grouped_parameters = [
                     {
-                        "params": [p for n, p in self.model.named_parameters() if n in decay_parameters],
+                        "params": [
+                            p for n, p in self.model.named_parameters() if (n in decay_parameters and p.requires_grad)
+                        ],
                         "weight_decay": self.args.weight_decay,
                     },
                     {
                         # Disable LAMB updates for bias parameters
-                        "params": [p for n, p in self.model.named_parameters() if n in bias_parameters],
+                        "params": [
+                            p for n, p in self.model.named_parameters() if (n in bias_parameters and p.requires_grad)
+                        ],
                         "weight_decay": 0.0,
                         "max_weight_norm": 0.0,
                     },
@@ -814,7 +818,7 @@ class IPUTrainer:
                         "params": [
                             p
                             for n, p in self.model.named_parameters()
-                            if n not in decay_parameters and n not in bias_parameters
+                            if n not in decay_parameters and n not in bias_parameters and p.requires_grad
                         ],
                         "weight_decay": 0.0,
                     },
@@ -828,11 +832,17 @@ class IPUTrainer:
             else:
                 optimizer_grouped_parameters = [
                     {
-                        "params": [p for n, p in self.model.named_parameters() if n in decay_parameters],
+                        "params": [
+                            p for n, p in self.model.named_parameters() if (n in decay_parameters and p.requires_grad)
+                        ],
                         "weight_decay": self.args.weight_decay,
                     },
                     {
-                        "params": [p for n, p in self.model.named_parameters() if n not in decay_parameters],
+                        "params": [
+                            p
+                            for n, p in self.model.named_parameters()
+                            if (n not in decay_parameters and p.requires_grad)
+                        ],
                         "weight_decay": 0.0,
                     },
                 ]
