@@ -228,6 +228,8 @@ def main():
     load_custom_ops()
 
     t = torch.randint(low=0, high=16, size=(768, 768))
+    print("Input shape:", t.shape, np.array(t).size % 16)
+
     t_packed = torch.tensor(_int4_npy_encoder_v1(t.numpy().astype(np.uint16).flatten()))
     n_groups, group_size = 768 // 16, 16
     t_packed = t_packed.reshape(768, n_groups, group_size // 4)
@@ -241,15 +243,15 @@ def main():
 
     model = Model()
     cpu_out = model(t_packed, t_scale, t_bias)
-    print("\nCPU")
+    print("\nCPU", cpu_out.shape)
     print(t)
     print(cpu_out)
     assert torch.all(cpu_out == t)
 
     ipu_model = poptorch.inferenceModel(model)
     ipu_out = ipu_model(t_packed, t_scale.half(), t_bias.half())
-    
-    print("\nIPU")
+
+    print("\nIPU", ipu_out.shape)
     print(t)
     print(ipu_out)
     assert torch.all(ipu_out == t)
