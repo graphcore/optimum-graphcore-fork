@@ -16,6 +16,7 @@ INSTALL_REQUIRES = [
     "transformers==4.29.2",
     "optimum==1.6.1",
     "diffusers[torch]==0.12.1",
+    "peft==0.3.0",
     "datasets",
     "tokenizers",
     "typeguard",
