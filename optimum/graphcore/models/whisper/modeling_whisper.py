@@ -663,4 +663,9 @@ class PipelinedWhisperForConditionalGeneration(WhisperForConditionalGeneration, 
             return_dict=True,
         )
         # Minimize IO and only return loss when training.
-        return Seq2SeqLMOutput(loss=output.loss, logits=None if self.training else output.logits)
+        return Seq2SeqLMOutput(
+            loss=output.loss,
+            logits=None if self.training else output.logits,
+            encoder_last_hidden_state=None if self.training else output.encoder_last_hidden_state,  # for tests to pass
+            past_key_values=None if self.training else output.past_key_values,  # for tests to pass
+        )
