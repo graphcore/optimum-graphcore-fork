@@ -64,7 +64,7 @@ def _colorize_lines(content):
     return "\n".join(lines)
 
 
-def create_diff_content(raw_diff: str) -> str:
+def create_diff_content(raw_diff: str, accept_all_changes: bool) -> str:
     matches = list(re.finditer(r"^[^><-]+", raw_diff, flags=re.MULTILINE))
     final_diff = []
     for m1, m2 in zip(matches, matches[1:] + [None]):
@@ -72,10 +72,11 @@ def create_diff_content(raw_diff: str) -> str:
         if end is not None and raw_diff[end - 1] == "\n":
             end = end - 1
         content = raw_diff[start:end]
-        print(_colorize_lines(content))
-        keep_diff = _ask_yes_or_no_question("Keep this diff")
-        if keep_diff == "n":
-            continue
+        if not accept_all_changes:
+            print(_colorize_lines(content))
+            keep_diff = _ask_yes_or_no_question("Keep this diff")
+            if keep_diff == "n":
+                continue
         final_diff.append(content)
     return "\n".join(final_diff)
 
@@ -86,6 +87,9 @@ def parse_args():
     )
     parser.add_argument("--transformers", type=Path, required=True, help="The path to the transformers example")
     parser.add_argument("--optimum", type=Path, required=True, help="The path to the optimum example")
+    parser.add_argument(
+        "--accept-all-defaults", action="store_true", help="Accept all changes and save at default path"
+    )
     return parser.parse_args()
 
 
@@ -93,7 +97,7 @@ def main():
     args = parse_args()
     raw_diff = diff(args.transformers, args.optimum)
     print(f"Creating the diff file between {args.transformers} and {args.optimum}:\n")
-    final_diff = create_diff_content(raw_diff)
+    final_diff = create_diff_content(raw_diff, args.accept_all_defaults)
     print(f"Difference between {args.transformers} and {args.optimum}:\n")
     print(_colorize_lines(final_diff))
     print("\n")
