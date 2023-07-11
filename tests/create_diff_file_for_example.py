@@ -103,10 +103,17 @@ def main():
     print("\n")
 
     default_filename = DIFF_DIRECTORY / f"{args.transformers.stem}.txt"
-    filename = input(f"Would you like to save this file at {default_filename} (y/n/other path)? ")
-    if filename == "y":
+    if not args.accept_all_defaults:
+        response = input(f"Would you like to save this file at {default_filename} (y/n/other path)? ")
+        if filename == "y":
+            filename = default_filename
+        elif filename == "n":
+            filename = None
+        else:
+            filename = response
+    else:
         filename = default_filename
-    if filename != "n":
+    if filename is not None:
         filename = Path(filename)
         should_override = True
         if filename.exists():
