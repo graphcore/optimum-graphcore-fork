@@ -1,4 +1,3 @@
-# Copyright 2022 The OpenAI Authors and The HuggingFace Inc. team. All rights reserved.
 # Copyright (c) 2023 Graphcore Ltd. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,6 +23,7 @@ from transformers.models.whisper.modeling_whisper import (
     WhisperDecoder,
     WhisperEncoder,
     WhisperEncoderLayer,
+    WhisperDecoderLayer,
     WhisperForConditionalGeneration,
     WhisperPositionalEmbedding,
 )
@@ -37,10 +37,9 @@ from ...modeling_utils import (
     get_layer_ipu,
     recomputation_checkpoint,
     register,
-    shift_tokens_right,
     split_encoder_decoder_ipu_config,
 )
-
+from poptorch_experimental_addons import collectives as collectives
 
 logger = logging.get_logger(__name__)
 
@@ -90,6 +89,20 @@ class IPUWhisperAttention(WhisperAttention, IPUAttentionMixin):
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, tgt_len, _ = hidden_states.size()
+        print(self.is_decoder)
+        print("HIDDEN SIZE" , hidden_states.shape)
+        tp = 1
+        if hasattr(self, "tensor_parallel"):
+            # TODO add more restrictions
+            tp = self.tensor_parallel
+            assert(self.num_heads % tp == 0)
+            def _shape(tensor: torch.Tensor, seq_len: int, bsz: int):
+                return remap(tensor.view(bsz, seq_len, self.num_heads//tp, self.head_dim).transpose(1, 2).contiguous())
+            self._shape = _shape
+
+
+
+
 
         query_states = self.q_proj(hidden_states) * self.scaling
         if key_value_states is not None:
@@ -124,35 +137,38 @@ class IPUWhisperAttention(WhisperAttention, IPUAttentionMixin):
             # This is retained so upstream DecoderLayer can stay as is and that tests pass.
             past_key_value = (key_states, value_states)
 
-        proj_shape = (bsz * self.num_heads, -1, self.head_dim)
+
+
+        proj_shape = (bsz * self.num_heads // tp, -1, self.head_dim)
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
-        key_states = key_states.reshape(*proj_shape)
-        value_states = value_states.reshape(*proj_shape)
+        key_states = remap(key_states.reshape(*proj_shape))
+        value_states = remap(value_states.reshape(*proj_shape))
 
         src_len = key_states.size(1)
 
         # Change: optionally serialize attention, mainly intended for the encoder with large sequence length.
         if self.is_attention_serialized:
+            print("USING SERIALIZED ATTENTION ")
             if layer_head_mask is not None:
                 raise ValueError("layer_head_mask is not supported yet with serialized attention.")
 
-            if self.dropout or self.training:
-                raise ValueError("dropout is not supported yet with serialized attention.")
+            # if self.dropout or self.training:
+            #     raise ValueError("dropout is not supported yet with serialized attention.")
 
             if attention_mask is not None:
                 if attention_mask.size() != (bsz, 1, tgt_len, src_len):
                     raise ValueError(
                         f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
                     )
-                attention_mask = attention_mask.view(bsz, tgt_len, src_len).repeat(self.num_heads, 1, 1)
+                attention_mask = attention_mask.view(bsz, tgt_len, src_len).repeat(self.num_heads // tp, 1, 1)
 
             attn_output = self.serialized_attention(query_states, key_states, value_states, 1.0, attention_mask)
         else:
             attn_weights = torch.bmm(query_states, key_states.transpose(1, 2))
 
-            if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
+            if attn_weights.size() != (bsz * self.num_heads // tp, tgt_len, src_len):
                 raise ValueError(
-                    f"Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is"
+                    f"Attention weights should be of size {(bsz * self.num_heads // tp, tgt_len, src_len)}, but is"
                     f" {attn_weights.size()}"
                 )
 
@@ -183,17 +199,17 @@ class IPUWhisperAttention(WhisperAttention, IPUAttentionMixin):
 
             attn_output = torch.bmm(attn_probs, value_states)
 
-        if attn_output.size() != (bsz * self.num_heads, tgt_len, self.head_dim):
+        if attn_output.size() != (bsz * self.num_heads // tp, tgt_len, self.head_dim):
             raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is"
+                f"`attn_output` should be of size {(bsz, self.num_heads // tp, tgt_len, self.head_dim)}, but is"
                 f" {attn_output.size()}"
             )
 
-        attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
+        attn_output = attn_output.view(bsz, self.num_heads // tp, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(1, 2)
 
-        attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim)
-        attn_output = self.out_proj(attn_output)
+        attn_output = remap(attn_output.reshape(bsz, tgt_len, self.embed_dim // tp))
+        attn_output = remap(self.out_proj(attn_output))
 
         # Change: modified check for output_attentions
         if not output_attentions:
@@ -201,6 +217,54 @@ class IPUWhisperAttention(WhisperAttention, IPUAttentionMixin):
 
         return attn_output, attn_weights, past_key_value
 
+class _WhisperDecoderTensorParallel(WhisperDecoderLayer):
+    def forward(
+            self,
+            hidden_states: torch.Tensor,
+            attention_mask: Optional[torch.Tensor] = None,
+            encoder_hidden_states: Optional[torch.Tensor] = None,
+            encoder_attention_mask: Optional[torch.Tensor] = None,
+            layer_head_mask: Optional[torch.Tensor] = None,
+            cross_attn_layer_head_mask: Optional[torch.Tensor] = None,
+            past_key_value: Optional[Tuple[torch.Tensor]] = None,
+            output_attentions: Optional[bool] = False,
+            use_cache: Optional[bool] = True,
+        ):
+        print("DECODER INPUT", hidden_states.shape)
+        if hasattr(self.self_attn, "tensor_parallel"):
+            # TODO add more restrictions
+            tp = self.self_attn.tensor_parallel
+            # test new strategy
+            if hidden_states.shape[2] != self.self_attn.q_proj.weight.shape[1]:
+                hidden_states = collectives.all_gather_cross_replica(hidden_states, tp)
+                y = hidden_states.permute(0,3,1,2)
+                hidden_states = y.reshape([y.shape[-4]* y.shape[-3],y.shape[-2], y.shape[-1]])
+                hidden_states = hidden_states.permute(1,2,0)
+
+            layer_outputs = super().forward(hidden_states,
+                            attention_mask,
+                            encoder_hidden_states,
+                            encoder_attention_mask,
+                            layer_head_mask,
+                            cross_attn_layer_head_mask,
+                            past_key_value,
+                            output_attentions,
+                            use_cache )
+
+            hidden_states = layer_outputs[0]
+            print("DECODER OUTPUT", hidden_states.shape)
+            if hasattr(self.self_attn, "tensor_parallel"):
+                hidden_states = hidden_states.reshape(hidden_states.shape[0], hidden_states.shape[1], tp, hidden_states.shape[2] // tp)
+                hidden_states = hidden_states.permute(2,0,1,3)
+                hidden_states = collectives.all_to_all_single_cross_replica(hidden_states, tp)[0]
+            outputs = (hidden_states, )
+            for out in layer_outputs[1:]:
+                outputs += (out,)
+            return outputs
+
+def remap(x):
+    x = torch.stack([x,x])
+    return x[0]
 
 class _WhisperEncoderLayerClamp(nn.Module):
     def forward(
@@ -221,6 +285,17 @@ class _WhisperEncoderLayerClamp(nn.Module):
                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
                 returned tensors for more detail.
         """
+        if hasattr(self.self_attn, "tensor_parallel"):
+            # TODO add more restrictions
+            tp = self.self_attn.tensor_parallel
+            # test new strategy
+            if hidden_states.shape[2] != self.self_attn.q_proj.weight.shape[1]:
+                hidden_states = collectives.all_gather_cross_replica(hidden_states, tp)
+                y = hidden_states.permute(0,3,1,2)
+                hidden_states = y.reshape([y.shape[-4]* y.shape[-3],y.shape[-2], y.shape[-1]])
+                hidden_states = hidden_states.permute(1,2,0)
+
+        #
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
         hidden_states, attn_weights, _ = self.self_attn(
@@ -229,16 +304,30 @@ class _WhisperEncoderLayerClamp(nn.Module):
             layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
         )
+        hidden_states = remap(hidden_states) #test
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
+        hidden_states = remap(hidden_states) #test
         hidden_states = self.activation_fn(self.fc1(hidden_states))
+        hidden_states = remap(hidden_states) #test
         hidden_states = nn.functional.dropout(hidden_states, p=self.activation_dropout, training=self.training)
         hidden_states = self.fc2(hidden_states)
+        hidden_states = remap(hidden_states) #test
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
+
+        if hasattr(self.self_attn, "tensor_parallel"):
+
+            hidden_states = hidden_states.reshape(hidden_states.shape[0], hidden_states.shape[1], tp, hidden_states.shape[2] // tp)
+            hidden_states = hidden_states.permute(2,0,1,3)
+            hidden_states = collectives.all_to_all_single_cross_replica(hidden_states, tp)[0]
+
+            # print("SPLIT HIDDEN STATE, ", hidden_states.shape)
+            # print("SPLIT HIDDEN STATE, ", hidden_states.dtype)
+
 
         # NOTE: This differs from the original implementation
         # There is a type mismatch bug with this call to clamp so we remove it here. It is anyway not needed on IPU because FP16 values are clamped to maximum value by default.
@@ -376,6 +465,15 @@ class PipelinedWhisperForConditionalGeneration(WhisperForConditionalGeneration, 
         for layer in self.model.encoder.layers:
             layer.__class__ = WhisperEncoderLayer if restore else _WhisperEncoderLayerClamp
 
+    def change_decoder_layer_class(self, restore: bool):
+        """Changes the encoder layer class to support tensor parallel hidden-states
+
+        Args:
+            restore: whether to restore the encoder layers to their original version or not.
+        """
+        for layer in self.model.decoder.layers:
+            layer.__class__ = WhisperEncoderLayer if restore else _WhisperDecoderTensorParallel
+
     def change_encoder_class(self, restore: bool, **kwargs):
         """Changes the encoder class to run the encoder under a `poptorch.cond` op.
 
@@ -389,9 +487,9 @@ class PipelinedWhisperForConditionalGeneration(WhisperForConditionalGeneration, 
             if isinstance(encoder, IPUWhisperConditionalEncoder):
                 self.model.encoder = encoder.to_model()
         else:
-            if self.ipu_config.ipus_per_replica > 1:
+            if self.ipu_config._ipus_per_replica > 1:
                 raise ValueError(
-                    f"`{self.ipu_config.ipus_per_replica=}` should be 1 when placing encoder and decoder on the same IPU."
+                    f"`{self.ipu_config.inference_ipus_per_replica=}` should be 1 when placing encoder and decoder on the same IPU."
                 )
             assert_poptorch_supports_cond(
                 context="Whisper encoder is being conditionally run on the same IPU as the decoder since `use_cond_encoder=True`."
@@ -538,6 +636,7 @@ class PipelinedWhisperForConditionalGeneration(WhisperForConditionalGeneration, 
             layer_ipu = get_layer_ipu(self.ipu_config, number_of_layers)
             encoder_layer_ipu = layer_ipu[:num_encoder_layers]
             decoder_layer_ipu = layer_ipu[num_encoder_layers:]
+            logger.info("LAYERS e/d:", layer_ipu)
 
         for index, (layer, ipu) in enumerate(zip(self.model.encoder.layers, encoder_layer_ipu)):
             if self.ipu_config.recompute_checkpoint_every_layer and index != self.config.num_hidden_layers - 1:
@@ -567,10 +666,13 @@ class PipelinedWhisperForConditionalGeneration(WhisperForConditionalGeneration, 
         )
         logger.info(f"Decoder Embedding  --> IPU {decoder_embedding_ipu}")
 
+        prev_ipu = decoder_layer_ipu[0]
         for index, (layer, ipu) in enumerate(zip(self.model.decoder.layers, decoder_layer_ipu)):
             if self.ipu_config.recompute_checkpoint_every_layer and index != self.config.num_hidden_layers - 1:
                 self._hooks.append(recomputation_checkpoint(layer))
-            self.model.decoder.layers[index] = poptorch.BeginBlock(layer, f"Decoder{index}", ipu_id=ipu)
+            if ipu != prev_ipu:
+                self.model.decoder.layers[index] = poptorch.BeginBlock(layer, f"Decoder{index}", ipu_id=ipu)
+                prev_ipu = ipu
             logger.info(f"Decoder {index:<2} --> IPU {ipu}")
 
         self.model.decoder.layer_norm = poptorch.BeginBlock(
@@ -644,13 +746,6 @@ class PipelinedWhisperForConditionalGeneration(WhisperForConditionalGeneration, 
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple[torch.Tensor], Seq2SeqLMOutput]:
-        # Duplicate this portion of upstream logic so we can intercept the call to `shift_tokens_right`.
-        if labels is not None:
-            if decoder_input_ids is None and decoder_inputs_embeds is None:
-                decoder_input_ids = shift_tokens_right(
-                    labels, self.config.pad_token_id, self.config.decoder_start_token_id
-                )
-
         output = super().forward(
             input_features=input_features,
             attention_mask=attention_mask,
@@ -668,7 +763,6 @@ class PipelinedWhisperForConditionalGeneration(WhisperForConditionalGeneration, 
             output_hidden_states=output_hidden_states,
             return_dict=True,
         )
-
         # Minimize IO and only return loss when training.
         return Seq2SeqLMOutput(
             loss=output.loss,
