@@ -1,5 +1,6 @@
 # coding=utf-8
 #  Copyright 2021 The HuggingFace Team. All rights reserved.
+#  Copyright (c) 2022 Graphcore Ltd. All rights reserved.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -93,6 +94,10 @@ class IPUConfig(BaseConfig):
             the number of IPUs used in `layers_per_ipu`.
         inference_ipus_per_replica (`int`, *optional*, defaults to `len(inference_layers_per_ipu) if ipus_per_replica==len(layers_per_ipu) else ipus_per_replica):
             Same as `ipus_per_replica` but for inference only.
+        parallelize_kwargs (`Dict[str, Any]`, *optional*, defaults to None):
+            Dictionary holding kwargs used for training model calls to `parallelize`.
+        inference_parallelize_kwargs (`Dict[str, Any]`, *optional*, defaults to None):
+            Dictionary holding kwargs used for inference model calls to `parallelize`.
 
         > Parameters for memory management
 
@@ -151,6 +156,10 @@ class IPUConfig(BaseConfig):
             Same as `serialized_projection_splits_per_ipu` but for inference only.
         recompute_checkpoint_every_layer (`bool`, *optional*, defaults to `False`):
             If `True`, uses gradient checkpointing at the end of every layer. It can help to reduce the memory impact.
+        explicit_ir_inference (`bool`, *optional*, defaults to `False`):
+            If `True`, uses experimental explicit-IR feature of PopART for inference models. This feature is only supported
+            for inference models. For some cases explicit-IR can provide a better memory liveness schedule, reducing the peak
+            memory during runtime.
 
         > Parameters related to host/device synchronization
 
@@ -202,6 +211,7 @@ class IPUConfig(BaseConfig):
     _serialized_embedding_splits_per_ipu = ManagedAttribute("serialized_embedding_splits_per_ipu")
     _projection_serialization_factor = ManagedAttribute("projection_serialization_factor")
     _serialized_projection_splits_per_ipu = ManagedAttribute("serialized_projection_splits_per_ipu")
+    _parallelize_kwargs = ManagedAttribute("parallelize_kwargs")
 
     # Create a mapping of attributes to their list of validation functions
     attribute_validators = defaultdict(list)
@@ -219,7 +229,7 @@ class IPUConfig(BaseConfig):
         if value is None:
             return
         elif isinstance(value, Sequence):
-            if not all([elem >= floor_value for elem in value]):
+            if not all(elem >= floor_value for elem in value):
                 raise ValueError(
                     f"`IPUConfig` attribute `{name}` must have all elements >= {floor_value}. You provided {value=}"
                 )
@@ -321,6 +331,9 @@ class IPUConfig(BaseConfig):
         seed: Optional[int] = None,
         auto_loss_scaling: bool = False,
         executable_cache_dir: str = "",
+        explicit_ir_inference: bool = False,
+        parallelize_kwargs: Optional[Dict[str, Any]] = None,
+        inference_parallelize_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         self.seed = seed
@@ -351,32 +364,9 @@ class IPUConfig(BaseConfig):
             inference_matmul_proportion if inference_matmul_proportion else fallback_matmul_proportion
         )
 
-        def check_and_set_replication_factor(attr_name, attr, default=False):
+        def check_and_set_replication_factor(attr_name, attr):
             if isinstance(attr, int):
                 setattr(self, attr_name, attr)
-            elif isinstance(attr, dict):
-                base_message = (
-                    f"Dictionary values for `{attr_name}`"
-                    " have been deprecated. Provide values of type `int` instead."
-                )
-
-                if "default" not in attr:
-                    raise ValueError(
-                        base_message + f" Attempted to use the `default`"
-                        f" replication factor in `{attr_name}={attr}"
-                        " however no such key exists."
-                    )
-
-                try:
-                    setattr(self, attr_name, attr.get("default"))
-                except TypeError as e:
-                    raise TypeError(
-                        base_message + f" Attempted to set"
-                        f" `{attr_name}` using the `default` key of `{attr_name}`"
-                        " but a TypeError was raised. Check the error traceback for more information."
-                    ) from e
-
-                warnings.warn(base_message, FutureWarning, stacklevel=2)
             else:
                 raise ValueError(f"{attr_name} must be of type `int`. You provided: {attr_name}={attr}, {type(attr)}.")
 
@@ -410,9 +400,13 @@ class IPUConfig(BaseConfig):
         self.auto_loss_scaling = auto_loss_scaling
         self.enable_half_partials = enable_half_partials
         self.executable_cache_dir = executable_cache_dir
+        self.explicit_ir_inference = explicit_ir_inference
         self.embedding_serialization_factor = embedding_serialization_factor
         self.recompute_checkpoint_every_layer = recompute_checkpoint_every_layer
         self.output_mode = output_mode
+
+        self.parallelize_kwargs = parallelize_kwargs or {}
+        self.inference_parallelize_kwargs = inference_parallelize_kwargs or {}
 
         # TODO: remove this if unnecessary.
         self.execute_encoder_on_cpu_for_generation = kwargs.pop("execute_encoder_on_cpu_for_generation", False)
@@ -562,7 +556,7 @@ class IPUConfig(BaseConfig):
         return self
 
     def _to_options(self, for_inference: bool = False, compile_only: bool = False) -> poptorch.Options:
-        if not compile_only and poptorch.ipuHardwareVersion() != 2:
+        if not compile_only and poptorch.ipuHardwareVersion() not in (2, 21):
             raise RuntimeError("This requires an IPU Mk2 system to run.")
 
         if self.execute_encoder_on_cpu_for_generation:
@@ -669,6 +663,9 @@ class IPUConfig(BaseConfig):
             "opt.useAutoloader": "true",
             "target.syncReplicasIndependently": "true",
         }
+
+        if for_inference and self.explicit_ir_inference:
+            opts._popart.set("enableExplicitIR", True)
 
         opts._Popart.set("engineOptions", engine_options)
 

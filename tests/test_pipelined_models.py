@@ -1,5 +1,6 @@
 # coding=utf-8
 # Copyright 2021 HuggingFace Inc.
+# Copyright (c) 2022 Graphcore Ltd. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -46,9 +47,11 @@ from transformers import (
 from optimum.graphcore import IPUConfig
 from optimum.graphcore.modeling_utils import _PRETRAINED_TO_PIPELINED_REGISTRY
 
-from .utils import MODELS_TO_TEST_MAPPING
+from .utils import CONFIG_MAPPING_EXTRA, MODEL_MAPPING_EXTRA, MODELS_TO_TEST_MAPPING, MODELS_TO_TEST_MAPPING_EXTRA
 
 
+MODELS_TO_TEST_MAPPING.update(MODELS_TO_TEST_MAPPING_EXTRA)
+[CONFIG_MAPPING.register(k, v) for k, v in CONFIG_MAPPING_EXTRA.items()]
 REVERSE_CONFIG_MAPPING = {v: k for k, v in CONFIG_MAPPING.items()}
 
 
@@ -69,6 +72,7 @@ def _get_models_to_test(model_to_test_names):
             MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING,
             MODEL_FOR_TOKEN_CLASSIFICATION_MAPPING,
             MODEL_MAPPING,
+            MODEL_MAPPING_EXTRA,
         ]
         config_class = None
         for mapping in mappings:
@@ -90,11 +94,14 @@ def _get_models_to_test(model_to_test_names):
         names = model_to_test_names[REVERSE_CONFIG_MAPPING[config_class]]
         if isinstance(names, dict):
             task = "ctc" if "CTC" in test_name else "default"
-            model_name_or_path, ipu_config_name_or_path = names.get(task, "default")
+            names = names.get(task, "default")
+            model_name_or_path = names.model
+            ipu_config = names.ipu_config
         else:
-            model_name_or_path, ipu_config_name_or_path = names
+            model_name_or_path = names.model
+            ipu_config = names.ipu_config
         models_to_test.append(
-            (test_name, model_name_or_path, ipu_config_name_or_path, pretrained_class, pipelined_class, config_class)
+            (test_name, model_name_or_path, ipu_config, pretrained_class, pipelined_class, config_class)
         )
     return models_to_test
 
@@ -176,17 +183,32 @@ class PipelinedModelsTester(TestCase):
 
     @parameterized.expand(MODELS_TO_TEST)
     def test_pretrained_and_pipelined_models_match(
-        self, test_name, model_name_or_path, ipu_config_name_or_path, pretrained_class, pipelined_class, config_class
+        self, test_name, model_name_or_path, ipu_config, pretrained_class, pipelined_class, config_class
     ):
         config = config_class.from_pretrained(model_name_or_path)
-        ipu_config = IPUConfig.from_pretrained(ipu_config_name_or_path)
+        if isinstance(ipu_config, str):
+            ipu_config = IPUConfig.from_pretrained(ipu_config)
+
+        # Serialized layers split large modules into submodules with the result
+        # aggregated/combined across submodules. Since torch uses intra-op parallelism,
+        # intermediate thread results may be different when comparing computation on a single module
+        # vs the serialized module. Since floating point addition is sensitive to the order of accumulation of
+        # intermediate results, results from serialized layers will be marginally different from the original layer.
+        # The code below turns off intra-op parallelism since the aim of this test is to test functional correctnesss
+        model_using_serialized_splits_per_ipu = (
+            ipu_config.serialized_embedding_splits_per_ipu or ipu_config.serialized_projection_splits_per_ipu
+        )
+        if model_using_serialized_splits_per_ipu:
+            torch_original_intra_op_thread_count = torch.get_num_threads()
+            torch.set_num_threads(1)
+
         pretrained_model = pretrained_class(config).eval()
         pipelined_model = pipelined_class.from_transformers(pretrained_model, ipu_config).eval()
 
         inputs = self._generate_input_for_model_class(model_name_or_path, pretrained_class)
         pretrained_model_outputs = pretrained_model(**inputs, return_dict=True)
 
-        pipelined_model.parallelize()
+        pipelined_model.parallelize(**ipu_config.inference_parallelize_kwargs)
         pipelined_model_outputs = pipelined_model.forward(**inputs, return_dict=True)
         for idx, k in enumerate(pretrained_model_outputs.keys()):
             pretrained_output, pipelined_output = pretrained_model_outputs[k], pipelined_model_outputs[k]
@@ -236,11 +258,16 @@ class PipelinedModelsTester(TestCase):
                     f"Pretrained and pipelined model {idx}th outputs do not match, max difference = {(pretrained_output - pipelined_output).abs().max()}",
                 )
 
+        if model_using_serialized_splits_per_ipu:
+            torch.set_num_threads(torch_original_intra_op_thread_count)
+
     @parameterized.expand(MODELS_TO_TEST)
     def test_parallelize_deparallelize(
-        self, test_name, model_name_or_path, ipu_config_name_or_path, pretrained_class, pipelined_class, config_class
+        self, test_name, model_name_or_path, ipu_config, pretrained_class, pipelined_class, config_class
     ):
-        ipu_config = IPUConfig.from_pretrained(ipu_config_name_or_path)
+        if isinstance(ipu_config, str):
+            ipu_config = IPUConfig.from_pretrained(ipu_config)
+
         model = pipelined_class.from_pretrained_transformers(model_name_or_path, ipu_config)
 
         # Remove the weight-norm hook, if present, because it doesn't work with deepcopy
@@ -251,11 +278,11 @@ class PipelinedModelsTester(TestCase):
                     delattr(module, hook.name)
 
         modules_before = copy.deepcopy(model).modules()
-        model.parallelize()
+        model.parallelize(**ipu_config.parallelize_kwargs)
         model.deparallelize()
         modules_after = copy.deepcopy(model).modules()
         # Confirm that parallelize then deparallelize won't change the model's modules
         for mod_before, mod_after in zip(modules_before, modules_after):
             self.assertEqual(type(mod_before), type(mod_after))
 
-        model.parallelize()
+        model.parallelize(**ipu_config.parallelize_kwargs)

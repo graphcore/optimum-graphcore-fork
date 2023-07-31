@@ -1,4 +1,5 @@
 #  Copyright 2022 The HuggingFace Team. All rights reserved.
+#  Copyright (c) 2022 Graphcore Ltd. All rights reserved.
 #
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
@@ -262,6 +263,8 @@ class IPUGenerationMixin(GenerationMixin):
                 self.poptorch_decoder.encoder_last_hidden_state.copy_(encoder_last_hidden_state)
                 if attention_mask is not None:
                     self.poptorch_decoder.encoder_attention_mask.copy_(attention_mask.half())
+                if self.poptorch_decoder.isCompiled() and not self.poptorch_decoder.isAttachedToDevice():
+                    self.poptorch_decoder.attachToDevice()
                 self.poptorch_decoder.copyNamedBuffersToDevice()
 
         # This will trigger a compile first time it's ran
@@ -1662,7 +1665,7 @@ class IPUGenerationMixin(GenerationMixin):
             if hasattr(stopping_criterion, "max_length"):
                 max_length = stopping_criterion.max_length
                 new_max_length = max_length - on_device_generation_steps
-                logger.info(
+                logger.debug(
                     f"Temporarily adapting `max_length` from {max_length} to {new_max_length} for on device generation."
                 )
                 stopping_criterion = copy.deepcopy(stopping_criterion)
@@ -1738,7 +1741,7 @@ class IPUGenerationMixin(GenerationMixin):
             raise ValueError("Context length (input_ids.shape[-1]) > 1 is not supported yet.")
 
         if (max_length - context_length) % self.on_device_generation_steps != 0:
-            logger.info(
+            logger.debug(
                 "`max_length - context_length` does not evenly divide `on_device_generation_steps` "
                 f"({max_length - context_length} vs {self.on_device_generation_steps}). Generation will be done "
                 f"{self.on_device_generation_steps} tokens at a time and stop short of `max_length` so as not to exceed it."
@@ -1840,7 +1843,7 @@ class IPUGenerationMixin(GenerationMixin):
             raise ValueError("Context length (input_ids.shape[-1]) > 1 is not supported yet.")
 
         if (max_length - context_length) % self.on_device_generation_steps != 0:
-            logger.info(
+            logger.debug(
                 "`max_length - context_length` does not evenly divide `on_device_generation_steps` "
                 f"({max_length - context_length} vs {self.on_device_generation_steps}). Generation will be done "
                 f"{self.on_device_generation_steps} tokens at a time and stop short of `max_length` so as not to exceed it."

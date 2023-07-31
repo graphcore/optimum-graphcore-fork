@@ -1,5 +1,6 @@
 # coding=utf-8
 # Copyright 2023 the HuggingFace Inc. team.
+# Copyright (c) 2023 Graphcore Ltd. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -77,8 +78,8 @@ class Seq2SeqTrainerTester(TestCasePlus):
             ]
             batch["decoder_attention_mask"] = outputs.attention_mask
 
-            assert all([len(x) == 512 for x in inputs.input_ids])
-            assert all([len(x) == 128 for x in outputs.input_ids])
+            assert all(len(x) == 512 for x in inputs.input_ids)
+            assert all(len(x) == 128 for x in outputs.input_ids)
 
             return batch
 
