@@ -4,37 +4,17 @@ import time
 import numpy as np
 import torch
 from datasets import load_dataset
-
-from optimum.graphcore import IPUConfig
-from optimum.graphcore.modeling_utils import to_pipelined
-
-from optimum.graphcore.models.whisper import WhisperProcessorTorch
 from transformers import WhisperForConditionalGeneration
+
+from benchmarks.whisper_configs import WHISPER_IPU_CONFIGS
+from optimum.graphcore.modeling_utils import to_pipelined
+from optimum.graphcore.models.whisper import WhisperProcessorTorch
 
 
 torch.set_num_threads(4)
 
 
 WHISPER_MODEL_SIZES = ["tiny", "base", "small", "medium", "large", "large-v2"]
-IPU_CONFIGS = {
-    "tiny": IPUConfig(executable_cache_dir="./whisper_exe_cache", inference_ipus_per_replica=2),
-    "base": IPUConfig(executable_cache_dir="./whisper_exe_cache", inference_ipus_per_replica=2),
-    "small": IPUConfig(executable_cache_dir="./whisper_exe_cache", inference_ipus_per_replica=2),
-    "medium": IPUConfig(
-        executable_cache_dir="./whisper_exe_cache", 
-        inference_ipus_per_replica=4,
-        inference_layers_per_ipu=[12, 12, 13, 11]),
-    "large": IPUConfig(
-        executable_cache_dir="./whisper_exe_cache",
-        inference_ipus_per_replica=8,
-        inference_layers_per_ipu=[8, 8, 8, 8, 6, 9, 9, 8],
-    ),
-    "large-v2": IPUConfig(
-        executable_cache_dir="./whisper_exe_cache",
-        inference_ipus_per_replica=8,
-        inference_layers_per_ipu=[8, 8, 8, 8, 6, 9, 9, 8],
-    ),
-}
 MAX_LENGTH = 448
 ENCODER_MAX_LENGTH = 1500
 TEST_IDX = 4
@@ -57,6 +37,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-serialization-factor", default=1, type=int)
     parser.add_argument("--sequence-serialization-factor", default=1, type=int)
     parser.add_argument("--use-cond-encoder", action="store_true")
+    parser.add_argument("--use-group-quantized-linears", action="store_true")
     args = parser.parse_args()
 
     model_name = f"openai/whisper-{args.model_size}"
@@ -65,10 +46,17 @@ if __name__ == "__main__":
     processor = WhisperProcessorTorch.from_pretrained(model_name)
     model = WhisperForConditionalGeneration.from_pretrained(model_name)
 
-    ipu_config = IPU_CONFIGS[args.model_size]
-    ipu_config.inference_ipus_per_replica = 1 if args.use_cond_encoder else ipu_config.inference_ipus_per_replica
+    ipu_config_name = args.model_size + ("-quantized" if args.use_group_quantized_linears else "")
+    ipu_config = WHISPER_IPU_CONFIGS[ipu_config_name]
+    if not args.use_cond_encoder and ipu_config.inference_ipus_per_replica == 1:
+        raise ValueError("ipu_config.inference_ipus_per_replica=1 requires --use-cond-encoder.")
+    elif args.use_cond_encoder and ipu_config.inference_ipus_per_replica > 1:
+        print("Overriding ipu_config.inference_ipus_per_replica to 1 since --use-cond-encoder was provided.")
+        ipu_config.inference_ipus_per_replica = 1
     ipu_config.inference_replication_factor = args.replication_factor
+    ipu_config.explicit_ir_inference = args.use_group_quantized_linears
     ipu_config.eval()
+
     pipelined_model = to_pipelined(model, ipu_config)
     pipelined_model = pipelined_model.parallelize(
         for_generation=True,
@@ -81,6 +69,7 @@ if __name__ == "__main__":
         on_device_generation_steps=args.on_device_generation_steps,
         use_encoder_output_buffer=args.on_device_generation_steps > 0 and not args.use_cond_encoder,
         use_cond_encoder=args.use_cond_encoder,
+        use_group_quantized_linears=args.use_group_quantized_linears,
         batch_serialization_factor=args.batch_serialization_factor,
         sequence_serialization_factor=args.sequence_serialization_factor,
     )
@@ -89,8 +78,10 @@ if __name__ == "__main__":
     ds = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     test_examples = ds[TEST_IDX : TEST_IDX + global_batch_size]["audio"]
 
-    print(f"Benchmarking transcription using librispeech examples.")
-    print(f"Using {model_name} with {ipu_config.inference_replication_factor} replicas, each taking {ipu_config.inference_ipus_per_replica} IPU(s).")
+    print("Benchmarking transcription using librispeech examples.")
+    print(
+        f"Using {model_name} with {ipu_config.inference_replication_factor} replicas, each taking {ipu_config.inference_ipus_per_replica} IPU(s)."
+    )
     print(f"Micro batch size {args.batch_size} - num beams {args.num_beams}.")
     print(f"{args=}.")
 
@@ -102,10 +93,12 @@ if __name__ == "__main__":
     for _ in range(100):
         start_total_time = time.perf_counter()
         start_time = time.perf_counter()
-        input_features = processor([test_example["array"] for test_example in test_examples], return_tensors="pt", sampling_rate=16000).input_features.half()
+        input_features = processor(
+            [test_example["array"] for test_example in test_examples], return_tensors="pt", sampling_rate=16000
+        ).input_features.half()
         end_time = time.perf_counter()
         preprocess_times.append(end_time - start_time)
-    
+
         start_time = time.perf_counter()
         generated_tokens = pipelined_model.generate(
             input_features,
@@ -125,7 +118,7 @@ if __name__ == "__main__":
         decode_times.append(end_time - start_time)
         end_total_time = time.perf_counter()
         total_times.append(end_total_time - start_total_time)
-    
+
     preprocess_mean = np.mean(preprocess_times[1:]) * 1000
     preprocess_std = np.std(preprocess_times[1:]) * 1000
     generate_mean = np.mean(generate_times[1:]) * 1000
