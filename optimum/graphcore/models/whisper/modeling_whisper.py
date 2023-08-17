@@ -97,7 +97,7 @@ class IPUWhisperAttention(WhisperAttention, IPUAttentionMixin):
             tp = self.tensor_parallel
             assert(self.num_heads % tp == 0)
             def _shape(tensor: torch.Tensor, seq_len: int, bsz: int):
-                return remap(tensor.view(bsz, seq_len, self.num_heads//tp, self.head_dim).transpose(1, 2).contiguous())
+                return tensor.view(bsz, seq_len, self.num_heads//tp, self.head_dim).transpose(1, 2).contiguous()
             self._shape = _shape
 
 
@@ -141,8 +141,8 @@ class IPUWhisperAttention(WhisperAttention, IPUAttentionMixin):
 
         proj_shape = (bsz * self.num_heads // tp, -1, self.head_dim)
         query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape)
-        key_states = remap(key_states.reshape(*proj_shape))
-        value_states = remap(value_states.reshape(*proj_shape))
+        key_states = key_states.reshape(*proj_shape)
+        value_states = value_states.reshape(*proj_shape)
 
         src_len = key_states.size(1)
 
@@ -208,8 +208,8 @@ class IPUWhisperAttention(WhisperAttention, IPUAttentionMixin):
         attn_output = attn_output.view(bsz, self.num_heads // tp, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(1, 2)
 
-        attn_output = remap(attn_output.reshape(bsz, tgt_len, self.embed_dim // tp))
-        attn_output = remap(self.out_proj(attn_output))
+        attn_output = attn_output.reshape(bsz, tgt_len, self.embed_dim // tp)
+        attn_output = self.out_proj(attn_output)
 
         # Change: modified check for output_attentions
         if not output_attentions:
@@ -304,18 +304,18 @@ class _WhisperEncoderLayerClamp(nn.Module):
             layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
         )
-        hidden_states = remap(hidden_states) #test
+        # hidden_states = remap(hidden_states) #test
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
         hidden_states = self.final_layer_norm(hidden_states)
-        hidden_states = remap(hidden_states) #test
+        # hidden_states = remap(hidden_states) #test
         hidden_states = self.activation_fn(self.fc1(hidden_states))
-        hidden_states = remap(hidden_states) #test
+        # hidden_states = remap(hidden_states) #test
         hidden_states = nn.functional.dropout(hidden_states, p=self.activation_dropout, training=self.training)
         hidden_states = self.fc2(hidden_states)
-        hidden_states = remap(hidden_states) #test
+        # hidden_states = remap(hidden_states) #test
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
         hidden_states = residual + hidden_states
 
@@ -323,6 +323,7 @@ class _WhisperEncoderLayerClamp(nn.Module):
 
             hidden_states = hidden_states.reshape(hidden_states.shape[0], hidden_states.shape[1], tp, hidden_states.shape[2] // tp)
             hidden_states = hidden_states.permute(2,0,1,3)
+            # hidden_states = remap(hidden_states) #test
             hidden_states = collectives.all_to_all_single_cross_replica(hidden_states, tp)[0]
 
             # print("SPLIT HIDDEN STATE, ", hidden_states.shape)
