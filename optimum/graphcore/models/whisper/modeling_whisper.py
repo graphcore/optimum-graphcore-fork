@@ -488,11 +488,7 @@ class PipelinedWhisperForConditionalGeneration(WhisperForConditionalGeneration, 
             if isinstance(encoder, IPUWhisperConditionalEncoder):
                 self.model.encoder = encoder.to_model()
         else:
-<<<<<<< HEAD
-            if self.ipu_config._ipus_per_replica > 1:
-=======
             if self.ipu_config.inference_ipus_per_replica > 1:
->>>>>>> main
                 raise ValueError(
                     f"`{self.ipu_config.inference_ipus_per_replica=}` should be 1 when placing encoder and decoder on the same IPU."
                 )
