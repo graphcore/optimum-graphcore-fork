@@ -562,7 +562,7 @@ class IPUBartLearnedPositionalEmbedding(BartLearnedPositionalEmbedding):
         if input_ids.shape[-1] == 1:
             # KV cache enabled.
             del past_key_values_length
-            return poptorch.dynamic_slice(self.weight, 0, self._generation_step + self.offset, 1, 1)
+            return torch.index_select(self.weight, 0, self._generation_step + self.offset)
         else:
             return super().forward(input_ids, past_key_values_length)
 
@@ -655,6 +655,33 @@ class _BartModelWithSharedEmbedding(BartModel):
             if restore
             else IPUBartLearnedPositionalEmbedding.from_model(position_embedding)
         )
+
+    def quantize_linear_layers(self, restore: bool, num_groups: int = 16):
+        if restore:
+            return
+
+        from ...quantization.group_quantize import GroupQuantLinear
+
+        logger.info("Group quantizing linear layers")
+        for module in self.encoder.layers:
+            module.self_attn.q_proj = GroupQuantLinear.from_model(module.self_attn.q_proj, num_groups)
+            module.self_attn.k_proj = GroupQuantLinear.from_model(module.self_attn.k_proj, num_groups)
+            module.self_attn.v_proj = GroupQuantLinear.from_model(module.self_attn.v_proj, num_groups)
+            module.self_attn.out_proj = GroupQuantLinear.from_model(module.self_attn.out_proj, num_groups)
+            module.fc1 = GroupQuantLinear.from_model(module.fc1, num_groups)
+            module.fc2 = GroupQuantLinear.from_model(module.fc2, num_groups)
+
+        for module in self.decoder.layers:
+            module.self_attn.q_proj = GroupQuantLinear.from_model(module.self_attn.q_proj, num_groups)
+            module.self_attn.k_proj = GroupQuantLinear.from_model(module.self_attn.k_proj, num_groups)
+            module.self_attn.v_proj = GroupQuantLinear.from_model(module.self_attn.v_proj, num_groups)
+            module.self_attn.out_proj = GroupQuantLinear.from_model(module.self_attn.out_proj, num_groups)
+            module.encoder_attn.q_proj = GroupQuantLinear.from_model(module.encoder_attn.q_proj, num_groups)
+            module.encoder_attn.k_proj = GroupQuantLinear.from_model(module.encoder_attn.k_proj, num_groups)
+            module.encoder_attn.v_proj = GroupQuantLinear.from_model(module.encoder_attn.v_proj, num_groups)
+            module.encoder_attn.out_proj = GroupQuantLinear.from_model(module.encoder_attn.out_proj, num_groups)
+            module.fc1 = GroupQuantLinear.from_model(module.fc1, num_groups)
+            module.fc2 = GroupQuantLinear.from_model(module.fc2, num_groups)
 
     def forward(
         self,
@@ -790,6 +817,7 @@ class PipelinedBartForConditionalGeneration(BartForConditionalGeneration, Pipeli
         self.change_lm_head_to_indexed_input_linear(restore=not (for_generation and not use_cache))
         self._use_encoder_output_buffer = kwargs.get("use_encoder_output_buffer", False)
         self.set_on_device_generation_steps(kwargs.get("on_device_generation_steps", 0))
+        self.model.quantize_linear_layers(restore=not kwargs.get("use_group_quantized_linears", False), num_groups=16)
 
         self.model.shared = poptorch.BeginBlock(self.model.shared, "Embedding", ipu_id=0)
         self.model.encoder.embed_positions = poptorch.BeginBlock(
@@ -943,7 +971,7 @@ class PipelinedBartForConditionalGeneration(BartForConditionalGeneration, Pipeli
 
 @register(BartForSequenceClassification)
 class PipelinedBartForSequenceClassification(BartForSequenceClassification, PipelineMixin):
-    def parallelize(self):
+    def parallelize(self, **kwargs):
         """
         Transform the model to run in an IPU pipeline.
         - Adds pipeline stages to the model
@@ -960,6 +988,7 @@ class PipelinedBartForSequenceClassification(BartForSequenceClassification, Pipe
         self.model.encoder_and_decoder_embeddings_computation(use_shared_embedding=True)
         self.model.change_bart_encoder_and_decoder_classes(restore=False)
         self.model.change_bart_attention_class(restore=False)
+        self.model.quantize_linear_layers(restore=not kwargs.get("use_group_quantized_linears", False), num_groups=16)
 
         logger.info("-------------------- Device Allocation --------------------")
         logger.info("Embedding --> IPU 0")
