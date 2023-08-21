@@ -235,7 +235,7 @@ class _WhisperDecoderTensorParallel(WhisperDecoderLayer):
             # TODO add more restrictions
             tp = self.self_attn.tensor_parallel
             # test new strategy
-            if hidden_states.shape[2] != self.self_attn.q_proj.weight.shape[1]:
+            if hidden_states.shape[2] != self.self_attn.num_heads * self.self_attn.head_dim:
                 hidden_states = collectives.all_gather_cross_replica(hidden_states, tp)
                 y = hidden_states.permute(0,3,1,2)
                 hidden_states = y.reshape([y.shape[-4]* y.shape[-3],y.shape[-2], y.shape[-1]])
@@ -289,7 +289,7 @@ class _WhisperEncoderLayerClamp(nn.Module):
             # TODO add more restrictions
             tp = self.self_attn.tensor_parallel
             # test new strategy
-            if hidden_states.shape[2] != self.self_attn.q_proj.weight.shape[1]:
+            if hidden_states.shape[2] != self.self_attn.num_heads * self.self_attn.head_dim:
                 hidden_states = collectives.all_gather_cross_replica(hidden_states, tp)
                 y = hidden_states.permute(0,3,1,2)
                 hidden_states = y.reshape([y.shape[-4]* y.shape[-3],y.shape[-2], y.shape[-1]])

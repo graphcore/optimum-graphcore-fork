@@ -5,7 +5,7 @@ import torch.nn as nn
 import poptorch
 from poptorch import CommGroupType, VariableRetrievalMode
 import copy
-from tplinear import TPLinear, TPLinearLora, TPEmbedding
+from tplinear import TPLinear, TPLinearLora, TPEmbedding, TPGroupQuantLinear, TPQuantLinearLora, QuantLinearLora, GroupQuantLinear
 from transformers import AutoConfig
 from optimum.graphcore.modeling_utils import recomputation_checkpoint, outline_attribute
 from peft import LoraConfig, LoraConfig, get_peft_model
@@ -16,13 +16,13 @@ from typing import List
 # ----------------- #
 bs = 1
 seq_len_encoder = 1500
-seq_len_decoder = 448
+seq_len_decoder = 224
 hidd_size = 1280
 
 tp = 4
 dp = 1
 pipeline = True
-gradient_accumulation = 8
+gradient_accumulation = 9
 lora = True
 
 use_encoders = True
@@ -52,6 +52,8 @@ def maybe_make_model(args):
     config = AutoConfig.from_pretrained("openai/whisper-large-v2")
     config.encoder_layers = args.num_encoders
     config.decoder_layers = args.num_decoders
+    config.max_length = seq_len_decoder
+
     whisper_ipu = PipelinedWhisperForConditionalGeneration(config=config).half()
     whisper_ipu.change_encoder_layer_class(False)
     whisper_ipu.change_decoder_layer_class(restore=False)
@@ -59,9 +61,11 @@ def maybe_make_model(args):
     whisper_ipu.change_decoder_class(restore=False)
     # whisper_ipu.change_encoder_class(restore=False)
     whisper_ipu.change_decoder_positional_embedding(restore=False)
+
     whisper_ipu.ipu_config = ipu_config
     whisper_ipu.change_lm_head(False, use_cache=True)
     whisper_ipu.tie_weights()
+    whisper_ipu.generation_config.max_length = seq_len_decoder
 
 
     if lora:
@@ -69,6 +73,7 @@ def maybe_make_model(args):
         whisper_ipu = get_peft_model(whisper_ipu, lora_config)
         whisper_ipu.print_trainable_parameters()
         whisper_ipu = whisper_ipu.model
+
 
     def get_placement(split: List[int]):
         assert args.num_encoders == sum(args.encoder_splits)
@@ -81,12 +86,12 @@ def maybe_make_model(args):
                 layer_idx +=1
         return placement
 
-    class TestWhisperEncoder(nn.Module):
+    class TestWhisperModel(nn.Module):
         def __init__(self):
             super().__init__()
             self.config = config
             self._hooks = []
-            # self.proj_out = whisper_ipu.proj_out
+
             # self.decoders = []
             if use_encoders:
                 # self.encoders = whisper_ipu.model.encoder.layers
@@ -102,45 +107,94 @@ def maybe_make_model(args):
             if use_decoders:
                 for decoder in self.decoder.layers:
                     self._hooks.append(recomputation_checkpoint(decoder))
+            self.proj_out = whisper_ipu.proj_out
             self.loss = DummyLoss()
 
 
         def pipeline(self):
+            stages_dict = {}
             # for encoders [14,16,2,0] is fitting.
             encoders_placement = get_placement(args.encoder_splits)
             decoders_placement = get_placement(args.decoder_splits)
+            self.encoder.conv1 = poptorch.BeginBlock(self.encoder.conv1, "Conv1", ipu_id=0)
+            self.encoder.conv2 = poptorch.BeginBlock(self.encoder.conv2, "Conv2", ipu_id=0)
+            self.encoder.embed_positions = poptorch.BeginBlock(
+                self.encoder.embed_positions, "Embed Positions", ipu_id=0
+            )
+            last_ipu = 0
+            stage_id = 0
+            stages_dict[stage_id] = ["Conv1", "Conv2", "Embed Positions"]
 
             for k, ipu in encoders_placement.items():
                 self.encoder.layers[k] = poptorch.BeginBlock(self.encoder.layers[k], f"Encoder{k}", ipu_id=ipu)
+                print("Placing encoder ", k, "on IPU ", ipu)
+                if ipu != last_ipu:
+                    stage_id += 1
+                    stages_dict[stage_id]=[f"Encoder{k}"]
 
+                else:
+                    stages_dict[stage_id].append(f"Encoder{k}")
+
+                last_ipu = ipu
+
+
+            self.encoder.layer_norm = poptorch.BeginBlock(
+                self.encoder.layer_norm, "Encoder Layer Norm", ipu_id=last_ipu
+            )
+            stages_dict[stage_id].append("Encoder Layer Norm")
+
+            print("Placing decoder embedding", "on IPU ", decoders_placement[0])
+            self.decoder.embed_tokens = poptorch.BeginBlock(
+                                            self.decoder.embed_tokens, "Decoder Embedding", ipu_id=decoders_placement[0]
+                                        )
+            if decoders_placement[0] != last_ipu:
+                stage_id +=1
+            stages_dict[stage_id]=["Decoder Embedding"]
+            last_ipu = decoders_placement[0]
             for k, ipu in decoders_placement.items():
                 self.decoder.layers[k] = poptorch.BeginBlock(self.decoder.layers[k], f"Decoder{k}", ipu_id=ipu)
+                print("Placing decoder ", k, "on IPU ", ipu)
+                if ipu != last_ipu:
+                    stage_id += 1
+                    stages_dict[stage_id]=[f"Decoder{k}"]
 
-            pass
+                else:
+                    stages_dict[stage_id].append(f"Decoder{k}")
+
+                last_ipu = ipu
+
+            self.decoder.layer_norm = poptorch.BeginBlock(
+                self.decoder.layer_norm, "Decoder Layer Norm", ipu_id=last_ipu
+            )
+            stages_dict[stage_id].append("Decoder Layer Norm")
+            stage_id+=1
+            print("Placing dout projection", k, "on IPU ", decoders_placement[0])
+
+            self.proj_out = poptorch.BeginBlock(self.proj_out, "Output Projection", ipu_id=decoders_placement[0])
+            self.loss = poptorch.BeginBlock(self.loss, "Loss", ipu_id=decoders_placement[0])
+            stages_dict[stage_id]=["Output Projection", "Loss"]
+            print("Pipeline stages dict", stages_dict)
+            return stages_dict
 
         def tie_weights(self):
-            self.proj_out.weight = self.decoder.embed_tokens.layer.weight
+            self.proj_out.weight = self.decoder.embed_tokens.weight
 
         def forward(self, x, ids=None):
             print(self.decoder.embed_tokens)
             y = [x]
             if use_encoders:
                 y = self.encoder(y[0])
-                # for encoder in self.encoder.layers:
-                #     y = encoder(y[0], None, None)
             if use_decoders:
                 hidden_states = self.decoder(input_ids=ids, encoder_hidden_states=y[0])[0]
-                # hidden_states = hidden_states.reshape(hidden_states.shape[0], hidden_states.shape[1], tp, hidden_states.shape[2] // tp)
-                # hidden_states = hidden_states.permute(2,0,1,3)
-                # hidden_states = collectives.all_to_all_single_cross_replica(hidden_states, tp)[0]
-                # print("before proj", hidden_states.shape)
-                # y = self.proj_out(hidden_states)
-                y = hidden_states[0]
-                print("after proj", hidden_states.shape)
+                hidden_states = hidden_states.reshape(hidden_states.shape[0], hidden_states.shape[1], tp, hidden_states.shape[2] // tp)
+                hidden_states = hidden_states.permute(2,0,1,3)
+                hidden_states = collectives.all_to_all_single_cross_replica(hidden_states, tp)[0]
+                print("before proj", hidden_states.shape)
+                y = self.proj_out(hidden_states)
             out, loss = self.loss(y)
             return out, loss
 
-    model = TestWhisperEncoder().half()
+    model = TestWhisperModel().half()
 
     if use_encoders:
         for encoder in model.encoder.layers:
@@ -182,13 +236,23 @@ def replace_linear_layers(model):
             allgather_output = False
             if lora and contains_any(n, lora_targets):
                 l  = TPLinearLora(l, tp=tp, axis=0, allgather_output=allgather_output)
+                # l = TPQuantLinearLora(l, 16, tp=tp, axis=0, allgather_output=allgather_output)
+                # l = QuantLinearLora(l, 16)
             else:
                 l = TPLinear(l, tp=tp, axis=0, serialization=1, allgather_output=allgather_output)
-            if "fc2" in n or "out_proj" in n or "proj_out" in n:
+                # l = TPGroupQuantLinear.from_model(l,16, tp=tp, axis=0, allgather_output=allgather_output)
+                # l = GroupQuantLinear.from_model(l, 16)
+
+
+            if "fc2" in n or "out_proj" in n:
                 l.axis = 1
-            if "fc" in n:
+            if "fc" in n and "encoder" in n:
+                l.serialization = 3
+                l.serialization_mode = poptorch.MatMulSerializationMode.InputChannels
+            if "fc" in n and "decoder" in n:
                 l.serialization = 4
-                pass
+            if "encoder" in n:
+                l.remap = True
 
             l.parallelize()
             layers.append((n,l))
@@ -287,7 +351,7 @@ def get_optimizer(model):
     optimizer.variable_attrs.markAsConstant("weight_decay")
     return optimizer
 
-def get_options():
+def get_options(stages_dict = None):
     options = poptorch.Options()
     if not pipeline:
         options._Popart.set("autoRecomputation", 4) # 4 = recompute all
@@ -297,6 +361,9 @@ def get_options():
     options._Popart.set("decomposeGradSum", True)
     # options.enableExecutableCaching("./exe_cache")
     options.setAvailableMemoryProportion({"IPU0": 0.2})
+    # options.setAvailableMemoryProportion({"IPU0": 0.1, "IPU1": 0.1, "IPU2": 0.1, "IPU3": 0.1})
+
+
     options.Precision.setPartialsType(torch.half)
     # options.outputMode(poptorch.OutputMode.All)
     options.TensorLocations.setOptimizerLocation(
@@ -304,6 +371,7 @@ def get_options():
             .useOnChipStorage(True)
             .useReplicatedTensorSharding(False) # DISABLE RTS
         )
+    # options.Training.setConvolutionDithering(True)
     # import popart
     # # # PopART performance options from optimum #
     # # # Only stream needed tensors back to host
@@ -324,10 +392,18 @@ def get_options():
 
     # options.TensorLocations.setActivationLocation(poptorch.TensorLocationSettings().useOnChipStorage(False))
     if pipeline:
+        assert stages_dict is not None
         options.Training.gradientAccumulation(gradient_accumulation)
-        options.setExecutionStrategy(poptorch.PipelinedExecution(poptorch.AutoStage.AutoIncrement))
+        options.setExecutionStrategy(poptorch.PipelinedExecution(
+            poptorch.Stage(*stages_dict[0]),
+            poptorch.Stage(*stages_dict[1]),
+            poptorch.Stage(*stages_dict[2]),
+            poptorch.Stage(*stages_dict[3]),
+            poptorch.Stage(*stages_dict[4]),
+
+        ))
         # To cut compilation time:
-        # options._Popart.set("timeLimitScheduler", 60)
+        # options._Popart.set("timeLimitScheduler", 60.0)
         # options._Popart.set("swapLimitScheduler", 1000)
     return options
 
@@ -349,18 +425,18 @@ def run_tp(args):
     torch.manual_seed(0)
     model = replace_linear_layers(get_model(args))
     model = replace_layer_norm(model)
-    # model.tie_weights()
-    model.pipeline()
+    model.tie_weights()
+    stages_dict = model.pipeline()
 
     input_tensors = get_input(model.config)
-    options = get_options()
+    options = get_options(stages_dict)
 
     # tp specific options
     options.replicationFactor(tp*dp)
     options.inputReplicaGrouping(tp, CommGroupType.Consecutive)
     options.outputMode(poptorch.OutputMode.All)
     options._Popart.setPatterns({"OpToIdentity": True})
-    options.setExecutionStrategy(poptorch.PipelinedExecution())
+    options.setExecutionStrategy(poptorch.ShardedExecution())
 
     for n, p in model.named_parameters():
         if p.requires_grad:
@@ -384,8 +460,8 @@ if __name__ == "__main__":
         report_name: str  = "test" # popvision report
         num_encoders: int = 32 # total encoder layers
         num_decoders: int = 32 # total decder layers
-        encoder_splits: List[int] = [14, 17, 1, 0] # encoder layers per ipu
-        decoder_splits: List[int] = [0, 0, 14, 18] # decoder layers per ipu
+        encoder_splits: List[int] = [15, 17, 0, 0] # encoder layers per ipu
+        decoder_splits: List[int] = [0, 0, 16, 16] # decoder layers per ipu
 
 
     args = SimpleArgumentParser().parse_args()
